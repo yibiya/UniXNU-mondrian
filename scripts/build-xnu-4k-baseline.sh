@@ -206,9 +206,17 @@ if [ ! -d refer/libplatform/.git ]; then
 fi
 export KERNEL_SDKROOT=$ROOT/.cache/fakeroot
 mkdir -p "$KERNEL_SDKROOT/usr/local/include/kernel" "$ROOT/build/xnu/obj/EXPORT_HDRS/libsa"
-ditto refer/libplatform/include "$KERNEL_SDKROOT/usr/local/include"
-ditto refer/libplatform/private "$KERNEL_SDKROOT/usr/local/include"
-ditto refer/libplatform/private/platform "$KERNEL_SDKROOT/System/Library/Frameworks/Kernel.framework/Versions/A/PrivateHeaders/platform"
+# ditto(1) is a macOS tool that merges directory trees. GNU cp has no merge mode,
+# so on Linux use the same "copy over, keep both" semantics with cp -R.
+if command -v ditto >/dev/null 2>&1; then
+  DITTO=ditto
+else
+  DITTO_FALLBACK() { mkdir -p "$2" && cp -R "$1/." "$2/"; }
+fi
+ditto_or_copy() { if [ "${DITTO:-}" = ditto ]; then ditto "$1" "$2"; else DITTO_FALLBACK "$1" "$2"; fi; }
+ditto_or_copy refer/libplatform/include "$KERNEL_SDKROOT/usr/local/include"
+ditto_or_copy refer/libplatform/private "$KERNEL_SDKROOT/usr/local/include"
+ditto_or_copy refer/libplatform/private/platform "$KERNEL_SDKROOT/System/Library/Frameworks/Kernel.framework/Versions/A/PrivateHeaders/platform"
 if [ ! -d refer/libdispatch/.git ]; then
   git clone --depth 1 --branch "$LIBDISPATCH_TAG" https://github.com/apple-oss-distributions/libdispatch.git refer/libdispatch
 fi
@@ -230,11 +238,20 @@ PY
 if [ ! -f "$KERNEL_SDKROOT/.xnu-$XNU_VERSION-headers" ] || \
    [ .cache/xnu-work/pexpert/pexpert/arm64/board_config.h -nt "$KERNEL_SDKROOT/.xnu-$XNU_VERSION-headers" ] || \
    [ .cache/xnu-work/pexpert/pexpert/arm64/PONG.h -nt "$KERNEL_SDKROOT/.xnu-$XNU_VERSION-headers" ]; then
+  # MakeInc.top derives the host figures from /usr/sbin/sysctl and sw_vers, which
+  # do not exist (or mean something else) on Linux. The SETUP tools also need the
+  # host deployment target: without it their Makefiles pass an empty
+  # -mmacosx-version-min and clang refuses to compile them.
   make -C .cache/xnu-work installhdrs SDKROOT=macosx ARCH_CONFIGS=ARM64 \
     MACHINE_CONFIGS=PONG KERNEL_CONFIGS=DEVELOPMENT \
     RC_DARWIN_KERNEL_VERSION="$XNU_DARWIN" RC_ProjectSourceVersion="$XNU_VERSION" \
     MAKEJOBS=-j"${JOBS:-4}" OBJROOT="$ROOT/build/xnu/obj" \
-    SYMROOT="$ROOT/build/xnu/sym" DSTROOT="$KERNEL_SDKROOT"
+    SYMROOT="$ROOT/build/xnu/sym" DSTROOT="$KERNEL_SDKROOT" \
+    MEMORY_SIZE="$(awk '/MemTotal/ {print $2 * 1024}' /proc/meminfo)" \
+    SYSCTL_HW_PHYSICALCPU="$(nproc)" \
+    SYSCTL_HW_LOGICALCPU="$(nproc)" \
+    HOST_CC="${CLT_PREFIX:-/opt/unixnu-linux/CommandLineTools/usr}/bin/xnu-host-cc" \
+    HOST_OS_VERSION="${HOST_OS_VERSION:-14.6}"
   touch "$KERNEL_SDKROOT/.xnu-$XNU_VERSION-headers"
 fi
 # The Pong provider scripts that this script runs (build-pong-platform-macos.py,
@@ -1236,6 +1253,11 @@ make -C .cache/xnu-work "${XNU_BUILD_TARGET:-build}" SDKROOT="${XNU_SDKROOT:-iph
   DEPLOYMENT_LINKER_FLAGS="-Wl,-ios_version_min,${UNIXNU_IOS_TARGET:-16.0}" \
   RC_DARWIN_KERNEL_VERSION="$XNU_DARWIN" RC_ProjectSourceVersion="$XNU_VERSION" \
   BUILD_LTO=0 BOUND_CHECKS=0 BUILD_WERROR="${XNU_BUILD_WERROR:-0}" MAKEJOBS=-j"${JOBS:-4}" \
+  MEMORY_SIZE="$(awk '/MemTotal/ {print $2 * 1024}' /proc/meminfo)" \
+  SYSCTL_HW_PHYSICALCPU="$(nproc)" \
+  SYSCTL_HW_LOGICALCPU="$(nproc)" \
+  HOST_OS_VERSION="${HOST_OS_VERSION:-14.6}" \
+  HOST_CC="${CLT_PREFIX:-/opt/unixnu-linux/CommandLineTools/usr}/bin/xnu-host-cc" \
   RC_NONARCH_CFLAGS="$EXTRA_CFLAGS" "${EXTRA_MAKE_ARGS[@]}" \
   OBJROOT="$ROOT/build/xnu/ios-obj" SYMROOT="$ROOT/build/xnu/ios-sym" DSTROOT="$ROOT/build/xnu/ios-dst"
 if [ "${XNU_SOURCE_CORECRYPTO14:-0}" = 1 ] && [ "$CRYPTO_BOOTSTRAP_MODE" = source ]; then
