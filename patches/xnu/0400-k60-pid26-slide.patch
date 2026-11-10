@@ -8,59 +8,55 @@
  #include <vm/vm_kern.h>
  #include <vm/vm_protos.h>
  #include <vm/vm_kern.h>
-@@ -2256,6 +2257,55 @@
- 			if (ml_get_interrupts_enabled()) { printf("K60PS enter=%d pid=%d err=%d\n",
- 			    k60ps_enter, k60ps_pid, k60ps_err); }
- 		}
+@@ -2243,6 +2244,51 @@
+ 		    k60_hb_ticks * 15, k60_abnormal_count, k60_xp, k60_lag, k60_mse,
+ 		    k60_execerr_prints, k60_kxp_prints, k60_dw, k60_data_mounted,
+ 		    k60_ler, k60_lw, k60_site); }
 +		/*
-+		 * 0400: decide whether the user-side probe prints unslid or raw
-+		 * addresses. It subtracts ui_cache_slide = cache_base - 0x180000000, so
-+		 * when _dyld_get_shared_cache_range() returns NULL the printed value is
-+		 * a different address entirely. The shared region start address is
-+		 * ground truth that the user side cannot see.
++		 * 0400: report the shared region start address once SpringBoard is
++		 * running. The user-side probe prints pc-ui_cache_slide, where
++		 * ui_cache_slide is cache_base-0x180000000; when
++		 * _dyld_get_shared_cache_range() returns NULL the base is 0, the
++		 * subtraction underflows, and the printed value is not an address in
++		 * the image at all. The slide implied by this start address says which
++		 * of the two happened.
 +		 *
-+		 * Observation only: one dump, after the heartbeat has started.
++		 * Retried every heartbeat because the process does not exist yet when
++		 * the first beats fire; printed once, then never again.
 +		 */
 +		{
-+			extern proc_t proc_find(int);
-+			extern int proc_rele(proc_t);
-+			extern kern_return_t vm_shared_region_start_address(
-+			    struct vm_shared_region *, mach_vm_offset_t *, task_t);
-+			extern struct vm_shared_region *vm_shared_region_get(task_t);
-+			extern void vm_shared_region_deallocate(
-+			    struct vm_shared_region *);
-+			proc_t k60_p = proc_find(26);
++			static int k60_sr_reported = 0;
 +
-+			if (k60_p == PROC_NULL) {
-+				printf("K60SR26 no-proc\n");
-+			} else {
-+				task_t k60_t = proc_task(k60_p);
++			if (!k60_sr_reported && ml_get_interrupts_enabled()) {
++				proc_t k60_sp = proc_find(26);
 +
-+				if (k60_t != TASK_NULL) {
-+					vm_shared_region_t k60_sr;
-+					mach_vm_offset_t k60_start = 0;
++				if (k60_sp != PROC_NULL) {
++					task_t k60_st = proc_task(k60_sp);
 +
-+					task_reference(k60_t);
-+					k60_sr = vm_shared_region_get(k60_t);
-+					if (k60_sr == (vm_shared_region_t)NULL) {
-+						printf("K60SR26 none\n");
-+					} else {
-+						if (vm_shared_region_start_address(
-+						    k60_sr, &k60_start, k60_t) == KERN_SUCCESS) {
-+							printf("K60SR26 start=%#llx slide=%#llx\n",
-+							    (unsigned long long)k60_start,
-+							    (unsigned long long)(k60_start -
-+							    UINT64_C(0x180000000)));
-+						} else {
-+							printf("K60SR26 start=<error>\n");
++					if (k60_st != TASK_NULL) {
++						vm_shared_region_t k60_sr;
++						mach_vm_offset_t k60_sa = 0;
++
++						task_reference(k60_st);
++						k60_sr = vm_shared_region_get(k60_st);
++						if (k60_sr != (vm_shared_region_t)NULL) {
++							if (vm_shared_region_start_address(
++							    k60_sr, &k60_sa, k60_st) == KERN_SUCCESS) {
++								printf("K60SR26 t=%llu start=%#llx slide=%#llx\n",
++								    k60_hb_ticks * 15,
++								    (unsigned long long)k60_sa,
++								    (unsigned long long)(k60_sa -
++								    UINT64_C(0x180000000)));
++								k60_sr_reported = 1;
++							}
++							vm_shared_region_deallocate(k60_sr);
 +						}
-+						vm_shared_region_deallocate(k60_sr);
++						task_deallocate(k60_st);
 +					}
-+					task_deallocate(k60_t);
++					proc_rele(k60_sp);
 +				}
-+				proc_rele(k60_p);
 +			}
 +		}
- 		extern int k60tr_seen;
- 		extern int k60tr_callpid[];
- 		extern int k60tr_elem[];
+ 	}
+ 	assert_wait_timeout((event_t)&k60_hb_started, THREAD_UNINT, 15, NSEC_PER_SEC);
+ 		{

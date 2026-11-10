@@ -218,14 +218,102 @@ prepare_calendar(void)
     }
 }
 
+/* Expand the archive the kernel writes next to the helper. The format is in
+ * scripts/pack-boot-jobs.py: a header, then one fixed record per entry
+ * followed by the name, the link target and the data. The kernel cannot create
+ * 406 files safely before PID 1 exists, so it does one write of the archive and
+ * this runs the loop in user space, where open/write/mkdir already work. */
+#define PONGJOB_HEADER 12
+#define PONGJOB_RECORD 24
+
+static int
+unpack_boot_jobs(const char *archive, const char *dest)
+{
+    struct stat st;
+    if (stat(archive, &st) != 0 || (st.st_mode & S_IFMT) != S_IFREG) return -1;
+    int in = open(archive, O_RDONLY, 0);
+    if (in < 0) return -1;
+    unsigned char head[PONGJOB_HEADER];
+    if (read(in, head, sizeof(head)) != (ssize_t)sizeof(head) ||
+        memcmp(head, "PONGJOB1", 8) != 0) { close(in); return -1; }
+    unsigned count = (unsigned)head[8] | ((unsigned)head[9] << 8) |
+                     ((unsigned)head[10] << 16) | ((unsigned)head[11] << 24);
+    char path[512];
+    int made = 0, failed = 0;
+    for (unsigned i = 0; i < count; i++) {
+        unsigned char rec[PONGJOB_RECORD];
+        if (read(in, rec, sizeof(rec)) != (ssize_t)sizeof(rec)) { failed++; break; }
+        unsigned mode = (unsigned)rec[0] | ((unsigned)rec[1] << 8);
+        unsigned size = (unsigned)rec[8] | ((unsigned)rec[9] << 8) |
+                        ((unsigned)rec[10] << 16) | ((unsigned)rec[11] << 24);
+        unsigned nlen = (unsigned)rec[12] | ((unsigned)rec[13] << 8) |
+                        ((unsigned)rec[14] << 16) | ((unsigned)rec[15] << 24);
+        unsigned dlen = (unsigned)rec[16] | ((unsigned)rec[17] << 8) |
+                        ((unsigned)rec[18] << 16) | ((unsigned)rec[19] << 24);
+        char name[512];
+        if (nlen == 0 || nlen >= sizeof(name)) {
+            failed++; break;
+        }
+        if (read(in, name, nlen) != (ssize_t)nlen) { failed++; break; }
+        name[nlen] = 0;
+        size_t dl = strlen(dest);
+        if (dl + 1 + nlen + 1 > sizeof(path)) { failed++; break; }
+        strcpy(path, dest);
+        path[dl] = '/';
+        strcpy(path + dl + 1, name);
+        if ((mode & S_IFMT) == S_IFDIR) {
+            if (mkdir(path, mode & 07777) == 0 || errno == 17) made++;
+            else failed++;
+        } else if ((mode & S_IFMT) == S_IFLNK) {
+            char target[512];
+            if (dlen == 0 || dlen >= sizeof(target)) { failed++; continue; }
+            if (read(in, target, dlen) != (ssize_t)dlen) { failed++; break; }
+            target[dlen] = 0;
+            if (symlink(target, path) == 0 || errno == 17) made++;
+            else failed++;
+        } else if ((mode & S_IFMT) == S_IFREG) {
+            int out = open(path, O_WRONLY | O_CREAT | O_TRUNC, mode & 07777);
+            if (out < 0) { failed++; continue; }
+            unsigned left = size;
+            char buf[4096];
+            while (left) {
+                size_t want = left < sizeof(buf) ? left : sizeof(buf);
+                ssize_t got = read(in, buf, want);
+                if (got <= 0) { failed++; break; }
+                if (write(out, buf, (size_t)got) != got) { failed++; break; }
+                left -= (unsigned)got;
+            }
+            close(out);
+            if (!left) made++;
+        } else {
+            failed++;
+        }
+    }
+    close(in);
+    printf("Pong init: boot-jobs unpack entries=%u made=%d failed=%d\n",
+           count, made, failed);
+    return failed ? -1 : 0;
+}
+
 /* Same composition as HackiOS init: hide physical audio plug-ins before
  * mediaserverd scans them. Keep mediaserverd for VideoToolbox/HEIC decoding.
  * The optional job set is a real 20G81 directory supplied in writable Data. */
 static void
 prepare_boot_services(void)
 {
+    /* Expand the curated job set first: the bind below needs a populated
+     * source directory, and the archive is written by the kernel next to the
+     * helper before PID 1 exists. */
+    (void)unpack_boot_jobs("/private/var/pong/boot-jobs.pack",
+        "/private/var/pong/boot-jobs");
     static const struct { const char *source, *target; } views[] = {
-        {"/private/var/pong/boot-jobs", "/pong/LaunchDaemons"},
+        /* 0401: bind over the directory launchd actually reads. The stock
+         * apply() pipeline leaves a /pong/LaunchDaemons symlink behind, but the
+         * sealed root here has no /pong at all, so a bind to that path was
+         * always skipped ("source/target unavailable") and launchd ran the
+         * full stock set. The target must exist for bindfs to attach, and
+         * /System/Library/LaunchDaemons does. */
+        {"/private/var/pong/boot-jobs", "/System/Library/LaunchDaemons"},
         {"/private/var/pong/empty-hal", "/System/Library/Audio/Plug-Ins/HAL"},
         {"/private/var/pong/empty-hal", "/Library/Audio/Plug-Ins/HAL"},
         /* Keep a read-only path to stock assets before overlaying their
