@@ -226,6 +226,21 @@ prepare_calendar(void)
 #define PONGJOB_HEADER 12
 #define PONGJOB_RECORD 24
 
+/* read() is a raw syscall here and may return a short count; the archive is
+ * parsed positionally, so every field must be filled before it is decoded. */
+static int
+read_full(int fd, void *buf, size_t want)
+{
+    unsigned char *p = buf;
+    size_t done = 0;
+    while (done < want) {
+        ssize_t n = read(fd, p + done, want - done);
+        if (n <= 0) return -1;
+        done += (size_t)n;
+    }
+    return 0;
+}
+
 static int
 unpack_boot_jobs(const char *archive, const char *dest)
 {
@@ -234,7 +249,7 @@ unpack_boot_jobs(const char *archive, const char *dest)
     int in = open(archive, O_RDONLY, 0);
     if (in < 0) return -1;
     unsigned char head[PONGJOB_HEADER];
-    if (read(in, head, sizeof(head)) != (ssize_t)sizeof(head) ||
+    if (read_full(in, head, sizeof(head)) != 0 ||
         memcmp(head, "PONGJOB1", 8) != 0) { close(in); return -1; }
     unsigned count = (unsigned)head[8] | ((unsigned)head[9] << 8) |
                      ((unsigned)head[10] << 16) | ((unsigned)head[11] << 24);
@@ -242,7 +257,7 @@ unpack_boot_jobs(const char *archive, const char *dest)
     int made = 0, failed = 0;
     for (unsigned i = 0; i < count; i++) {
         unsigned char rec[PONGJOB_RECORD];
-        if (read(in, rec, sizeof(rec)) != (ssize_t)sizeof(rec)) { failed++; break; }
+        if (read_full(in, rec, sizeof(rec)) != 0) { failed++; break; }
         unsigned mode = (unsigned)rec[0] | ((unsigned)rec[1] << 8);
         unsigned size = (unsigned)rec[8] | ((unsigned)rec[9] << 8) |
                         ((unsigned)rec[10] << 16) | ((unsigned)rec[11] << 24);
@@ -254,7 +269,7 @@ unpack_boot_jobs(const char *archive, const char *dest)
         if (nlen == 0 || nlen >= sizeof(name)) {
             failed++; break;
         }
-        if (read(in, name, nlen) != (ssize_t)nlen) { failed++; break; }
+        if (read_full(in, name, nlen) != 0) { failed++; break; }
         name[nlen] = 0;
         size_t dl = strlen(dest);
         if (dl + 1 + nlen + 1 > sizeof(path)) { failed++; break; }
@@ -266,14 +281,29 @@ unpack_boot_jobs(const char *archive, const char *dest)
             else failed++;
         } else if ((mode & S_IFMT) == S_IFLNK) {
             char target[512];
-            if (dlen == 0 || dlen >= sizeof(target)) { failed++; continue; }
-            if (read(in, target, dlen) != (ssize_t)dlen) { failed++; break; }
+            if (dlen == 0 || dlen >= sizeof(target)) {
+                failed++;
+                (void)lseek(in, (off_t)(dlen + size), SEEK_CUR);
+                continue;
+            }
+            if (read_full(in, target, dlen) != 0) { failed++; break; }
             target[dlen] = 0;
             if (symlink(target, path) == 0 || errno == 17) made++;
             else failed++;
+            if (size) (void)lseek(in, (off_t)size, SEEK_CUR);
         } else if ((mode & S_IFMT) == S_IFREG) {
             int out = open(path, O_WRONLY | O_CREAT | O_TRUNC, mode & 07777);
-            if (out < 0) { failed++; continue; }
+            if (out < 0) {
+                if (failed < 3) {
+                    printf("Pong init: unpack open failed errno=%d name=%s\n",
+                           errno, name);
+                }
+                failed++;
+                /* Skip this entry's data, or the next record is read from the
+                 * middle of a file and every following entry is garbage. */
+                (void)lseek(in, (off_t)size, SEEK_CUR);
+                continue;
+            }
             unsigned left = size;
             char buf[4096];
             while (left) {
@@ -284,7 +314,8 @@ unpack_boot_jobs(const char *archive, const char *dest)
                 left -= (unsigned)got;
             }
             close(out);
-            if (!left) made++;
+            if (left) (void)lseek(in, (off_t)left, SEEK_CUR);
+            else made++;
         } else {
             failed++;
         }
