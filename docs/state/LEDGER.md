@@ -296,3 +296,17 @@ UI 按钮插件 `@local/k60-console-buttons` 仅作辅助，不替代上面的�
 `board.toml` 改为 `k60_selftest_reboot=0 k60_autoreset=0`（commit `212a12b`），并在 boot 镜像 FAT 的 `EFI/UniXNU/unixnu.toml` 内就地替换（`boot-v19.img`）。两者都是 bring-up 仪器：存在意义是内核卡死时不必人工长按电源，而现在两个真正会 panic 的缺陷都已有实质修复，不再需要它们。
 
 **验证（`boot-v19.img`，13:25:38 起）**：越过 352 秒仍在运行，日志持续增长，`crashed=0`、`invalid zlib=0`、`corpses=0`；`MiniIOMobileFramebuffer` 报 301 帧 / 5002 ms = **60 fps**，帧间隔 301 帧全部 <18 ms，**0 暂停**；SpringBoard 与 backboardd 均在运行。设备未回 fastboot。
+
+### 2026-11-10 14:09 — 第二轮修复：不只是全零块
+
+第一轮 `rf-repair-all.py` 只替换**整块全零**的 4 KiB 块，因此漏掉了两类损坏：
+- 块内部分为零（如 `Info.plist` 的 fork 只有 1 块，`0x2` 起 1623 字节不对，整块并非全零）；
+- fork 尾部按 4096 补齐的填充区（`CalendarUIKit/Localizable.loctable` 46 块里 27 块全零，但块内仍有有效数据）。
+
+`scripts/diagnostics/rf3-repair.py` 改为**逐字节对比整个 fork 流**，凡与 IPSW 不同即重写该 extent。结果：**222 个文件**（前一版漏了它们）被修正，31,149,634 字节；另有 25,006 个文件本来就一致。`rf3-verify.py` 全卷复验：**169,842 个文件、25,228 个带 fork 的文件，0 个不符**。
+
+设备侧回放 343,180 个 4 KiB 块（252 段）；`CalendarUIKit/Localizable.loctable` 的 fork 段读回 `ab4640f9…` 与本地镜像一致。
+
+**上机（`boot-v19.img`，14:04:18 起）**：`invalid zlib header`=0、`invalid resource map`=0、`expected chunk count`=0、`faking zero data`=0（修复前分别为 46/5/2/49）。60 fps 稳定，越过 322 s 仍在运行，未回 fastboot。
+
+**剩余问题（非本轮引入）**：`syncdefaultsd` ×5 与 `mmaintenanced` ×2 仍以 `Too many corpses` 收尾，触发点是 `open("")` 返回 `K60POPEN err=13`（XNU 侧诊断补丁发现 `ndp->ni_cnd.cn_nameptr` 为空），属应用层空路径缺陷；`/private/var/root/Library/Caches/com.apple.coresymbolicationd/20G81` 创建失败是因为 Data 种子只有 36 个文件/590 KB，这些目录本应由真机首次开机的 launchd 建立。
