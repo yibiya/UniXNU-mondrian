@@ -267,3 +267,17 @@ UI 按钮插件 `@local/k60-console-buttons` 仅作辅助，不替代上面的�
    重建并验证 `diff` 源码树 0 差异（内核对黄金等价）
 4. 用 `tools/apfs` 离线在 Data 窗造 `/pong/LaunchDaemons`（按 `CORE`/`DENY` 筛选 20G81 plist），
    解决 launchd(PID 1) 崩溃 —— 这是"进系统并稳住"的最后一步
+
+---
+
+## 2026-11-10 — SpringBoard 卡点闭环：ResourceFork 清零
+
+**症状**：iOS 进度条走到同一处后设备自动回 fastboot，`console` 里 `passd`/`CommCenter`/`identityservicesd`/`assistantd`/`callservicesd`/`medialserverd` 反复 `invalid zlib header` → `decmpfs_pagein_compressed: err 22` → `faking zero data` → `Process[...] crashed`。
+
+**根因**：`windows/os-window.img` 里 **497 个文件**的 `com.apple.ResourceFork` 有整段 4 KiB 全零区（合计 **1.39 GB**，单文件最多 7325 块）。decmpfs 读到全零块即认为 zlib 流损坏。不是 2 GiB Data 窗、不是 UUID、不是 AMFI 的问题——三者本轮均已验证正常（Data 以 RW 挂载 `ro=0`，ENOSPC 归零）。
+
+**修复**：`scripts/diagnostics/rf-repair-all.py` 从 IPSW dmg 重建 fork，只覆盖全零块（不碰完好区）。修完 471 个文件 / 1.39 GB；全卷重扫 **0** 个残留；`passd`/`CommCenter`/`identityservicesd` 三例哈希与 IPSW 逐字节相同。`scripts/diagnostics/rf2-apply.sh` 把变化的 339,969 个 4 KiB 块（309 段）回放上机；`passd` 段设备读回 `6c899199…` 与本地镜像一致。
+
+**同轮另外两个独立缺陷**（都会单独 panic，此前被前面的故障掩盖）：
+1. `profile.toml` 缺 `--library-only com.apple.driver.AppleMobileFileIntegrity`（ed48e8d 删掉后未随 emit_prelink.py 恢复）。AMFI 作为完整 security extension 进 prelink，早期 security 路径跳进其 `__TEXT_EXEC` 即 `Unexpected fault in kernel static region`，且 USB console 尚未起来，串口 0 字节。core commit `982e41f`。
+2. 手工替换 payload 里的 `kernel.macho` 绕过了 payload 步骤的 `patch-armcpu-validate.py`，退回 `CPU configuration in device tree is invalid @AppleARMCPU.cpp:111`。
