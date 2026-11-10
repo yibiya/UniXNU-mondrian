@@ -281,3 +281,10 @@ UI 按钮插件 `@local/k60-console-buttons` 仅作辅助，不替代上面的�
 **同轮另外两个独立缺陷**（都会单独 panic，此前被前面的故障掩盖）：
 1. `profile.toml` 缺 `--library-only com.apple.driver.AppleMobileFileIntegrity`（ed48e8d 删掉后未随 emit_prelink.py 恢复）。AMFI 作为完整 security extension 进 prelink，早期 security 路径跳进其 `__TEXT_EXEC` 即 `Unexpected fault in kernel static region`，且 USB console 尚未起来，串口 0 字节。core commit `982e41f`。
 2. 手工替换 payload 里的 `kernel.macho` 绕过了 payload 步骤的 `patch-armcpu-validate.py`，退回 `CPU configuration in device tree is invalid @AppleARMCPU.cpp:111`。
+
+**验证（2026-11-10 13:13 上机，镜像 `boot-v18.img`）**：
+- `invalid zlib header` = **0**（修复前 46）、`faking zero data` = **0**（修复前 49）、`Process[...] crashed` = **0**（修复前 6 个进程 57 次）。
+- `launchd_cache_loader` → `Early boot complete` → `SpringBoard[26]` → `backboardd[55]` 全部到达；`K60DATA mounted ro=0`（Data 以读写挂载）。
+- `MiniIOMobileFramebuffer` 稳定出帧：一轮 304 帧中 295 帧 <18 ms，**0 次暂停**，最长 18 ms。设备未回 fastboot。
+
+进度条不再停在原处；原先"同一位置掉回 fastboot"的因果链（清零块 → decmpfs err 22 → 进程连环被 `To many corpses` 砍掉 → UI 无法完成启动）已切断。
