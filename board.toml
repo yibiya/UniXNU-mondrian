@@ -159,8 +159,14 @@ dram_size = "0x140000000"
 #   k60_panic_reset=1           automatic fastboot after a panic, so a failed
 #                               experiment does not need a power cycle.
 #   k60_console_export=1        exports the console to /chosen for the host.
-#   k60_selftest_reboot=300     self-reset watchdog: 150 hearts of 2 s, then
-#                               back to fastboot (pitfall 133).
+#   k60_selftest_reboot=0       off. 300 was a bring-up watchdog: 150 hearts of
+#                               2 s, then back to fastboot (pitfall 133). It is
+#                               what pulled the board out of a *healthy* iOS at
+#                               13:18 on 2026-11-10, four minutes after the boot
+#                               that first reached SpringBoard without crashing.
+#   k60_autoreset=0             off. The kernel default is 300 s from bsd_init,
+#                               independent of the boot args, so leaving it
+#                               unset resets the board mid-session anyway.
 #   amfi_get_out_of_my_way=1, launchd_unsecure_cache=1, xpcproxy_idversion=1,
 #   k60_entitlement_allow=1, k60_skip_iosurface=1: the userland gates that let
 #   launchd and SpringBoard start without a real AMFI/SEP.
@@ -174,7 +180,7 @@ kernel_args = [
   "k60_tolerate_cache_loader=1", "launchd_unsecure_cache=1",
   "xpcproxy_idversion=1", "applog=1", "applog_name=runningboardd,backboardd,lsd",
   "k60_entitlement_allow=1", "k60_skip_iosurface=1", "k60_panic_reset=1",
-  "k60_selftest_reboot=300",
+  "k60_selftest_reboot=0", "k60_autoreset=0",
 ]
 # All eight CPUs. The AppleARMCPU device-tree validation that required a
 # single-CPU ADT is bypassed by the kext patch on _validateConfiguration, and the
