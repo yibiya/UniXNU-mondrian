@@ -208,3 +208,4 @@ zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-pong-physical-keys.patch
 0506-k60-120hz-refresh.patch
 0392-k60-weak-scanout-stubs.patch
 0399-k60-shared-cache-root-layout.patch
+0400-k60-pid26-slide.patch

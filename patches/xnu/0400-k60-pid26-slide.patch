@@ -1,0 +1,66 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -161,6 +161,7 @@
+ #endif
+ 
+ #include <vm/vm_map.h>
++#include <vm/vm_shared_region.h>
+ #include <vm/vm_kern.h>
+ #include <vm/vm_protos.h>
+ #include <vm/vm_kern.h>
+@@ -2256,6 +2257,55 @@
+ 			if (ml_get_interrupts_enabled()) { printf("K60PS enter=%d pid=%d err=%d\n",
+ 			    k60ps_enter, k60ps_pid, k60ps_err); }
+ 		}
++		/*
++		 * 0400: decide whether the user-side probe prints unslid or raw
++		 * addresses. It subtracts ui_cache_slide = cache_base - 0x180000000, so
++		 * when _dyld_get_shared_cache_range() returns NULL the printed value is
++		 * a different address entirely. The shared region start address is
++		 * ground truth that the user side cannot see.
++		 *
++		 * Observation only: one dump, after the heartbeat has started.
++		 */
++		{
++			extern proc_t proc_find(int);
++			extern int proc_rele(proc_t);
++			extern kern_return_t vm_shared_region_start_address(
++			    struct vm_shared_region *, mach_vm_offset_t *, task_t);
++			extern struct vm_shared_region *vm_shared_region_get(task_t);
++			extern void vm_shared_region_deallocate(
++			    struct vm_shared_region *);
++			proc_t k60_p = proc_find(26);
++
++			if (k60_p == PROC_NULL) {
++				printf("K60SR26 no-proc\n");
++			} else {
++				task_t k60_t = proc_task(k60_p);
++
++				if (k60_t != TASK_NULL) {
++					vm_shared_region_t k60_sr;
++					mach_vm_offset_t k60_start = 0;
++
++					task_reference(k60_t);
++					k60_sr = vm_shared_region_get(k60_t);
++					if (k60_sr == (vm_shared_region_t)NULL) {
++						printf("K60SR26 none\n");
++					} else {
++						if (vm_shared_region_start_address(
++						    k60_sr, &k60_start, k60_t) == KERN_SUCCESS) {
++							printf("K60SR26 start=%#llx slide=%#llx\n",
++							    (unsigned long long)k60_start,
++							    (unsigned long long)(k60_start -
++							    UINT64_C(0x180000000)));
++						} else {
++							printf("K60SR26 start=<error>\n");
++						}
++						vm_shared_region_deallocate(k60_sr);
++					}
++					task_deallocate(k60_t);
++				}
++				proc_rele(k60_p);
++			}
++		}
+ 		extern int k60tr_seen;
+ 		extern int k60tr_callpid[];
+ 		extern int k60tr_elem[];
