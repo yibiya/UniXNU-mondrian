@@ -310,3 +310,17 @@ UI 按钮插件 `@local/k60-console-buttons` 仅作辅助，不替代上面的�
 **上机（`boot-v19.img`，14:04:18 起）**：`invalid zlib header`=0、`invalid resource map`=0、`expected chunk count`=0、`faking zero data`=0（修复前分别为 46/5/2/49）。60 fps 稳定，越过 322 s 仍在运行，未回 fastboot。
 
 **剩余问题（非本轮引入）**：`syncdefaultsd` ×5 与 `mmaintenanced` ×2 仍以 `Too many corpses` 收尾，触发点是 `open("")` 返回 `K60POPEN err=13`（XNU 侧诊断补丁发现 `ndp->ni_cnd.cn_nameptr` 为空），属应用层空路径缺陷；`/private/var/root/Library/Caches/com.apple.coresymbolicationd/20G81` 创建失败是因为 Data 种子只有 36 个文件/590 KB，这些目录本应由真机首次开机的 launchd 建立。
+
+### 2026-11-10 14:15 — 澄清：dyld 缓存与框架「缺失」是误判
+
+一度以为 `dyld_shared_cache_arm64e` / `UIKitCore` 二进制缺失导致 UI 不出。**该判断作废**：
+
+- 设备端 init 探针（`K60DYLD`）实测 `/System/Library/Caches/com.apple.dyld` **rc=0**、`dyld_shared_cache_arm64` **rc=0**（真名不带 `e`，与 PITFALLS P-22 更正一致）。
+- 离线工具看到「缺失」，是因为 `windows/os-window.img` 只含 **OS 卷**；`UIKitCore` 等实现体与 dyld 缓存位于 **SystemCryptex 卷**，即 SystemOS 窗口（2,665,480,192 B，与 `ipsw/096-56782-083.dmg` 大小逐字节相同）。该窗口以 `union=1` 挂到 `/` 上，日志 `APFS SystemOS union PASS`。
+- 因此 1685/1694 个 `PrivateFrameworks` 目录下没有可执行文件是**真机原样**，不是损坏。
+
+**上机现状（`boot-v19.img`，14:04:18 起）**：
+- 解码类错误全部为 0：`invalid zlib header` / `invalid resource map` / `expected chunk count` / `faking zero data`。
+- 451 次进程启动，SpringBoard[26] 存活未崩，`MiniIOMobileFramebuffer` 稳定 60 fps、帧间隔 <18 ms、0 暂停；越过 600 s 未回 fastboot。
+- **仍未出现 UI**：日志里没有 `_checkIn returned` / `_run entered` / `Pong UI: main queue reached`，即 SpringBoard 未进入 main loop，与用户看到的「进度条停在 7/8」一致。
+- 剩余可疑项：`syncdefaultsd`×5、`mmaintenanced`×2 以 `Too many corpses` 收尾，触发点是 `open("")` → `K60POPEN err=13`。
