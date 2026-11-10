@@ -351,6 +351,11 @@ prepare_boot_services(void)
         {"/private/var/pong/boot-jobs", "/System/Library/LaunchDaemons"},
         {"/private/var/pong/empty-hal", "/System/Library/Audio/Plug-Ins/HAL"},
         {"/private/var/pong/empty-hal", "/Library/Audio/Plug-Ins/HAL"},
+        /* 0402: launchd reads its service cache from here, not from the
+         * LaunchDaemons directory. The kernel writes the curated cache (22
+         * CORE jobs, no App-cryptex programs) to the Data volume, so it has
+         * to be bound over the stock one or launchd keeps using stock. */
+        {"/private/var/pong/xpc", "/System/Library/xpc"},
         /* Keep a read-only path to stock assets before overlaying their
          * directory. The RAM view contains aliases, not copied pictures. */
         {"/Library/Wallpaper", "/private/var/pong/stock-wallpaper"},
