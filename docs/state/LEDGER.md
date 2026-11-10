@@ -288,3 +288,11 @@ UI 按钮插件 `@local/k60-console-buttons` 仅作辅助，不替代上面的�
 - `MiniIOMobileFramebuffer` 稳定出帧：一轮 304 帧中 295 帧 <18 ms，**0 次暂停**，最长 18 ms。设备未回 fastboot。
 
 进度条不再停在原处；原先"同一位置掉回 fastboot"的因果链（清零块 → decmpfs err 22 → 进程连环被 `To many corpses` 砍掉 → UI 无法完成启动）已切断。
+
+### 2026-11-10 13:31 — 「又回到 fastboot」= 自检定时器，不是崩溃
+
+上一轮修复后的启动在 13:17:01 结束，正是 `k60_selftest_reboot=300` 从 `bsd_init` 起算的 300 秒。此外内核 `k60_autoreset` 的**默认值也是 300 秒**，与 boot args 无关，所以只改 `selftest` 不够。
+
+`board.toml` 改为 `k60_selftest_reboot=0 k60_autoreset=0`（commit `212a12b`），并在 boot 镜像 FAT 的 `EFI/UniXNU/unixnu.toml` 内就地替换（`boot-v19.img`）。两者都是 bring-up 仪器：存在意义是内核卡死时不必人工长按电源，而现在两个真正会 panic 的缺陷都已有实质修复，不再需要它们。
+
+**验证（`boot-v19.img`，13:25:38 起）**：越过 352 秒仍在运行，日志持续增长，`crashed=0`、`invalid zlib=0`、`corpses=0`；`MiniIOMobileFramebuffer` 报 301 帧 / 5002 ms = **60 fps**，帧间隔 301 帧全部 <18 ms，**0 暂停**；SpringBoard 与 backboardd 均在运行。设备未回 fastboot。
