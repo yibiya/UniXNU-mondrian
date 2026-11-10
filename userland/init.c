@@ -310,8 +310,14 @@ main(int argc, char **argv, char **envp)
     char *env[] = {
         "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
         "HOME=/var/root", "TMPDIR=/var/tmp/",
-        "DYLD_SHARED_CACHE_DIR=/private/preboot/System/Library/Caches/com.apple.dyld/",
-        "DYLD_FALLBACK_LIBRARY_PATH=/private/preboot/usr/lib",
+        /* PITFALLS P-22: the reference board keeps its cache under
+         * /private/preboot, this port's union mount exposes it at
+         * /System/Library/Caches/com.apple.dyld (boot probe: rc=0 there,
+         * rc=2 under /private/preboot). Pointing at preboot made dyld report
+         * "Library not loaded: /usr/lib/libSystem.B.dylib (no dyld cache)" and
+         * launchd died as PID 1 before any job could run. */
+        "DYLD_SHARED_CACHE_DIR=/System/Library/Caches/com.apple.dyld/",
+        "DYLD_FALLBACK_LIBRARY_PATH=/System/Library/Frameworks:/usr/lib",
         NULL
     };
     puts("Pong init: exec original 20G81 launchd; stdin/stdout -> /dev/null, stderr -> /dev/console");
