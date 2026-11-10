@@ -258,13 +258,17 @@ unpack_boot_jobs(const char *archive, const char *dest)
     for (unsigned i = 0; i < count; i++) {
         unsigned char rec[PONGJOB_RECORD];
         if (read_full(in, rec, sizeof(rec)) != 0) { failed++; break; }
-        unsigned mode = (unsigned)rec[0] | ((unsigned)rec[1] << 8);
-        unsigned size = (unsigned)rec[8] | ((unsigned)rec[9] << 8) |
-                        ((unsigned)rec[10] << 16) | ((unsigned)rec[11] << 24);
-        unsigned nlen = (unsigned)rec[12] | ((unsigned)rec[13] << 8) |
+        /* '<IIIIII': mode@0 uid@4 gid@8 size@12 nlen@16 dlen@20. Reading
+         * size from 8 skipped a field, so nlen decoded as the file size and
+         * every path was built from a name that ran into the payload. */
+        unsigned mode = (unsigned)rec[0] | ((unsigned)rec[1] << 8) |
+                        ((unsigned)rec[2] << 16) | ((unsigned)rec[3] << 24);
+        unsigned size = (unsigned)rec[12] | ((unsigned)rec[13] << 8) |
                         ((unsigned)rec[14] << 16) | ((unsigned)rec[15] << 24);
-        unsigned dlen = (unsigned)rec[16] | ((unsigned)rec[17] << 8) |
+        unsigned nlen = (unsigned)rec[16] | ((unsigned)rec[17] << 8) |
                         ((unsigned)rec[18] << 16) | ((unsigned)rec[19] << 24);
+        unsigned dlen = (unsigned)rec[20] | ((unsigned)rec[21] << 8) |
+                        ((unsigned)rec[22] << 16) | ((unsigned)rec[23] << 24);
         char name[512];
         if (nlen == 0 || nlen >= sizeof(name)) {
             failed++; break;
