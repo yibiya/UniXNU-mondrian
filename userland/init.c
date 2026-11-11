@@ -369,12 +369,12 @@ wallpaper_directory(const char *path)
 {
     struct stat st;
     if (lstat(path, &st) != 0) {
-        if (errno != 2 || mkdir(path, 0755) != 0 || chown(path, 0, 0) != 0)
+        if (errno != 2 || mkdir(path, 0755) != 0)
             return -1;
     } else if ((st.st_mode & S_IFMT) != S_IFDIR || st.st_uid != 0 || (st.st_mode & 022)) {
         return -1;
     }
-    return chmod(path, 0755);
+    return chown(path, 0, 0) != 0 || chmod(path, 0755) != 0 ? -1 : 0;
 }
 
 /* Expose exactly the names in the preserved Apple directory. The view holds

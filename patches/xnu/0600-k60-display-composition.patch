@@ -238,7 +238,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	}
  	fDiff = gDiff != 0;
  	fDiffLeft = fDiffTop = ~0u;
-@@ -536,92 +602,113 @@
+@@ -536,92 +602,125 @@
  	return at < 0 ? 0 : at > (in - 1) * 256 ? (in - 1) * 256 : at;
  }
  
@@ -277,6 +277,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
 -	bool            filter, unscaled;
 +	PanelRect rect;
 +	bool directBottom;
++	bool directOnly;
  };
  
  void
@@ -296,8 +297,17 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
 -		uint32_t * to;
 -
 -		if (y < 0 || (uint32_t) y >= fPanelHeight) {
--			continue;
--		}
++		if (job->directOnly && !fDiff) {
++			const DisplayLayer & bottom = fLayers[0];
++			const uint32_t * source = (const uint32_t *)(bottom.surface->pixels() +
++			    (size_t)(bottom.src[1] + y - bottom.py0) * bottom.surface->info.bytesPerRow);
++			uint32_t * to = (uint32_t *)(fBase + (size_t)y * fRowBytes);
++			for (int32_t x = rect.left; x < rect.right; x++) {
++				uint32_t value = source[bottom.src[0] + x - bottom.px0];
++				to[x] = value >> 24 ? value | 0xff000000 : 0xff000000;
++			}
+ 			continue;
+ 		}
 -		to = (uint32_t *) (fBase + (size_t) y * fRowBytes);
 -		if (job->unscaled) {
 -			/* not scaled at all */
@@ -426,7 +436,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	}
  }
  
-@@ -649,10 +736,10 @@
+@@ -649,10 +748,10 @@
  		job = fb->fHelperJob;
  		IOLockUnlock(fb->fHelperLock);
  		/* share index + 1 of fThreads (the presenter takes share 0) */
@@ -441,7 +451,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		fb->drawRows(job, y0, y1, blend);
  		IOLockLock(fb->fHelperLock);
  		fb->fHelpersBusy--;
-@@ -663,104 +750,79 @@
+@@ -663,104 +762,83 @@
  	}
  }
  
@@ -525,7 +535,11 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
 +	bool directBottom = bottom.surface && bottom.unscaled && !bottom.rgba &&
 +	    bottom.bounds.left <= rect.left && bottom.bounds.top <= rect.top &&
 +	    bottom.bounds.right >= rect.right && bottom.bounds.bottom >= rect.bottom;
-+	RowJob job = { rect, directBottom };
++	bool directOnly = directBottom;
++	for (unsigned i = 1; i < SWAP_LAYERS && directOnly; i++) {
++		directOnly = !fLayers[i].surface || rectEmpty(rectIntersection(rect, fLayers[i].bounds));
++	}
++	RowJob job = { rect, directBottom, directOnly };
 +	if (fThreads <= 1 || fDiff || rect.bottom - rect.top < 64) {
 +		drawRows(&job, rect.top, rect.bottom, fRow);
  		return;
@@ -609,7 +623,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	IOLockLock(fHelperLock);
  	while (fHelpersBusy != 0) {
  		IOLockSleep(fHelperLock, &fHelpersBusy, THREAD_UNINT);
-@@ -807,10 +869,38 @@
+@@ -807,10 +885,38 @@
  }
  
  /* SwapEnd: the swap is handed to the thread that puts frames on the panel, as soon as that has no other waiting. */
@@ -649,7 +663,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	/* which process is driving the panel: the window server, Setup, or something else */
  	{
  		proc_t k60_cp = current_proc();
-@@ -848,22 +938,22 @@
+@@ -848,22 +954,22 @@
  	while (fSwapsWaiting >= swapQueue()) {
  		if (IOLockSleepDeadline(fSwapLock, &fSwapsWaiting, deadline, THREAD_UNINT) == THREAD_TIMED_OUT &&
  		    fSwapsWaiting >= swapQueue()) {
@@ -679,7 +693,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  }
  
  void
-@@ -876,7 +966,7 @@
+@@ -876,7 +982,7 @@
  IOMobileFramebuffer::presenter(void)
  {
  	static uint8_t swap[SWAP_SIZE];         /* (one thread) */
@@ -688,7 +702,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  
  	for (;;) {
  		IOLockLock(fSwapLock);
-@@ -884,13 +974,11 @@
+@@ -884,13 +990,11 @@
  			IOLockSleep(fSwapLock, fSwap, THREAD_UNINT);
  		}
  		memcpy(swap, fSwap[fSwapFirst], SWAP_SIZE);
@@ -705,7 +719,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		}
  		MiniIOSurfaceClearKept();               /* (the next frame is some milliseconds away) */
  	}
-@@ -898,19 +986,21 @@
+@@ -898,19 +1002,21 @@
  
  /* A swap's surfaces onto the panel, once the GPU is done with them. */
  void
@@ -731,7 +745,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		}
  	}
  	fStatWaiting += mach_absolute_time() - began;
-@@ -947,6 +1037,11 @@
+@@ -947,6 +1053,11 @@
  	IOLockWakeup(fSwapLock, &fSwapsWaiting, true);
  	IOLockUnlock(fSwapLock);
  	IOLockLock(fLock);
@@ -743,7 +757,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	if (fLastFrame != 0) {
  		absolutetime_to_nanoseconds(began - fLastFrame, &nanos);
  		nanos /= NSEC_PER_MSEC;
-@@ -964,87 +1059,126 @@
+@@ -964,87 +1075,126 @@
  		    swapWord(swap, SWAP_ID), fSwapsShown, swapWord(swap, SWAP_SURFACE(0)), swapWord(swap, SWAP_SURFACE(1)),
  		    swapWord(swap, SWAP_SURFACE(2)), swapWord(swap, SWAP_SURFACE(3)), set, swapWord(swap, SWAP_LAYERS_CLEARED));
  	}
@@ -945,7 +959,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  	}
  	drawn = mach_absolute_time();
  	fSwapsShown++;
-@@ -1063,8 +1197,9 @@
+@@ -1063,8 +1213,9 @@
  	}
  	if (layers != fLayersShown) {
  		IOLog("MiniIOMobileFramebuffer: swap #%u: surfaces in layers 0x%x now (0x%x before): %u %u %u %u\n", fSwapsShown, layers,
@@ -957,7 +971,7 @@ diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobil
  		fLayersShown = layers;
  	}
  
-@@ -1425,8 +1560,7 @@
+@@ -1425,8 +1576,7 @@
  			IOLog("MiniIOMobileFramebuffer: swap request of %u bytes, expected %u\n", args->structureInputSize, SWAP_SIZE);
  			return kIOReturnBadArgument;
  		}
