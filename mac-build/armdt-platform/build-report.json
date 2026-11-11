@@ -30,7 +30,7 @@
     "-target-feature",
     "-Xclang",
     "+pan",
-    "-DXNU_PONG_ADRENO_PLATFORM=0",
+    "-DXNU_PONG_ADRENO_PLATFORM=1",
     "-I/root/k60/work/out-cand/mondrian/ipados-16.6.1-20G81/mondrian/tree/.cache/fakeroot/System/Library/Frameworks/Kernel.framework/Versions/A/PrivateHeaders",
     "-I/root/k60/work/out-cand/mondrian/ipados-16.6.1-20G81/mondrian/tree/.cache/fakeroot/System/Library/Frameworks/Kernel.framework/Versions/A/Headers",
     "-Wno-deprecated-declarations",
