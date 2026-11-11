@@ -8,8 +8,8 @@ reconstructed from the recorded revisions without modifying the reference
 checkouts. Only product libraries are compiled; no tests, shader fixtures,
 benchmarks, image verification, device operations or automatic publication.
 
-Run --prepare-only first, then the printed cargo generate-lockfile/fetch
-commands. The product build is --locked --offline and keeps Cargo.lock,
+Run --prepare-only first, then the printed cargo fetch --locked command.
+The product build is --locked --offline and keeps Cargo.lock,
 source/patch records, frontend objects and the Rust archive for relinking.
 The generated publication marker is always 0: activation belongs to the
 hardware-qualified integration step, not to this builder.
@@ -136,7 +136,10 @@ class Builder:
         destination = self.out / 'sources' / (name + '-' + identity)
         complete = destination / '.pong-source.json'
         if not complete.is_file():
-            destination.mkdir(parents=True, exist_ok=False)
+            if destination.exists():
+                raise RuntimeError('Incomplete prepared source at ' + str(destination) +
+                                   '; inspect its patch logs and choose a fresh output directory')
+            destination.mkdir(parents=True)
             archive = self.out / 'sources' / (name + '-' + identity + '.tar')
             with archive.open('wb') as stream:
                 subprocess.run(['git', '-C', str(repository), 'archive', '--format=tar', revision],
@@ -146,7 +149,7 @@ class Builder:
             for index, (entry, data) in enumerate(patches):
                 patch = self.out / 'patches' / name / ('%02d-' % index + Path(entry['path']).name)
                 write_changed(patch, data)
-                self.run(['git', 'apply', '--whitespace=nowarn', str(patch)],
+                self.run(['patch', '--batch', '--forward', '--fuzz=0', '-p1', '-i', str(patch)],
                          self.out / ('%s-patch-%02d.log' % (name, index)), cwd=destination)
             dump(complete, record)
         self.source_records[name] = dict(record, directory=str(destination))
@@ -229,7 +232,7 @@ def prepare_meson(builder):
     write_changed(cross, text)
     native = out / 'pong-host.native'
     write_changed(native, '[binaries]\nc = ' + repr(builder.cc) + '\ncpp = ' + repr(builder.cpp) +
-                  '\n[ built-in options ]\nc_args = []\ncpp_args = []\nc_link_args = []\ncpp_link_args = []\n')
+                  '\n[built-in options]\nc_args = []\ncpp_args = []\nc_link_args = []\ncpp_link_args = []\n')
     return cross, native
 
 
@@ -241,22 +244,43 @@ def prepare_cargo(builder, translator, module):
     external = [p for p in tomllib.loads(seed.decode())['package'] if 'source' in p]
     versions = {p['name']: p['version'] for p in external}
     manifest = bridge / 'Cargo.toml'
-    dependencies = [
-        'metal2vulkan = { path = ' + json.dumps(str(translator / 'crates/metal2vulkan')) + ', features = ["ash"] }',
-        'metal2vulkan-runtime = { path = ' + json.dumps(str(translator / 'crates/metal2vulkan-runtime')) + ' }',
-        'libc = "=' + versions['libc'] + '"',
-        'serde_json = "=' + versions['serde_json'] + '"',
-        'sha2 = "=' + versions['sha2'] + '"',
-    ]
     write_changed(manifest, '\n'.join([
         '[package]', 'name = "pong-metal-bridge"', 'version = "0.1.0"', 'edition = "2024"',
         'rust-version = "1.98"', '[workspace]', '[lib]', 'crate-type = ["staticlib"]',
         'path = ' + json.dumps(str(ROOT / 'drivers/PongMetal/bridge/lib.rs')),
-        '[dependencies]', *dependencies,
+        '[dependencies]',
+        'metal2vulkan = { path = ' + json.dumps(str(translator / 'crates/metal2vulkan')) + ', features = ["ash"] }',
+        'metal2vulkan-runtime = { path = ' + json.dumps(str(translator / 'crates/metal2vulkan-runtime')) + ' }',
+        'libc = "=' + versions['libc'] + '"',
         '[profile.release]', 'panic = "unwind"', 'debug = 0', '']))
     write_changed(bridge / 'dependency-seed.lock', seed)
-    if not (bridge / 'Cargo.lock').exists():
-        write_changed(bridge / 'Cargo.lock', seed)
+    packages = list(external)
+    for package in packages:
+        if package['name'] == 'serde':
+            package['dependencies'] = ['serde_core']
+    registry = 'registry+https://github.com/rust-lang/crates.io-index'
+    for package in builder.pins['runtime_loader_packages']:
+        packages.append(dict(name=package['name'], version=package['version'], source=registry,
+                             checksum=package['checksum'], **({'dependencies': package['dependencies']}
+                             if 'dependencies' in package else {})))
+    packages += [
+        dict(name='metal2vulkan', version='0.2.0',
+             dependencies=['ash', 'metal2vulkan-air', 'serde_json', 'sha2']),
+        dict(name='metal2vulkan-air', version='0.2.0', dependencies=['sha2']),
+        dict(name='metal2vulkan-runtime', version='0.2.0',
+             dependencies=['ash', 'libc', 'metal2vulkan', 'sha2']),
+        dict(name='pong-metal-bridge', version='0.1.0',
+             dependencies=['libc', 'metal2vulkan', 'metal2vulkan-runtime']),
+    ]
+    # serde_json's cfg(any()) serde dependency is in Cargo.lock even though no
+    # product code enables serde/derive; its versions remain the upstream seed's.
+    lock = '# Recorded Pong product dependencies; do not update during a build.\nversion = 4\n'
+    for package in sorted(packages, key=lambda item: item['name']):
+        lock += '\n[[package]]\n'
+        for key in ('name', 'version', 'source', 'checksum', 'dependencies'):
+            if key in package:
+                lock += key + ' = ' + json.dumps(package[key]) + '\n'
+    write_changed(bridge / 'Cargo.lock', lock)
     cargo_directory = builder.args.cargo_directory.resolve()
     cargo = str(cargo_directory / 'cargo')
     # Cargo reads configuration from its cwd, not --manifest-path's directory.
@@ -274,7 +298,6 @@ def prepare_cargo(builder, translator, module):
     builder.env['CXXFLAGS_' + builder.guest['rust_target'].replace('-', '_')] = shlex.join(builder.cpp_flags)
     builder.env['AR_' + builder.guest['rust_target'].replace('-', '_')] = builder.ar
     commands = [
-        [cargo, '+' + builder.pins['host']['rust_toolchain'], 'generate-lockfile', '--manifest-path', str(manifest)],
         [cargo, '+' + builder.pins['host']['rust_toolchain'], 'fetch', '--locked', '--manifest-path', str(manifest),
          '--target', builder.guest['rust_target']],
     ]
@@ -282,7 +305,8 @@ def prepare_cargo(builder, translator, module):
          environment=dict(CARGO_HOME=builder.env['CARGO_HOME'], SDKROOT=str(builder.sdk),
                           IPHONEOS_DEPLOYMENT_TARGET=builder.guest['version']),
          seed_record=builder.pins['metal_module'],
-         note='Run these fetch-only commands before building; the seed lacks runtime Vulkan-loader packages.'))
+         loader_packages=builder.pins['runtime_loader_packages'],
+         note='Fetch-only preparation; Cargo.lock retains original seed versions plus pinned ash/libloading.'))
     return manifest, commands
 
 
