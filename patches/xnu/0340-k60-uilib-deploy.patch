@@ -4,9 +4,9 @@
 +/*
 + * 0340: deploy the UI compatibility library onto the Data volume.
 + *
-+ * The dylib was built on Linux (clang-18 + ld64.lld, pitfall #118/#119) from
-+ * device/userland/{ui_compat,touch,icons_cpu}.c against a compile-only header
-+ * shim; every external symbol resolves in the host process at runtime.
++ * The dylib is rebuilt by userland/build.py ui against real iOS SDK headers
++ * with clang and a 4 KiB ad-hoc signature. That command also refreshes this
++ * array; changing ui_compat.c alone does not change what the device loads.
 + * Embedded here so the kernel can place it at /private/var/pong/ right after
 + * the Data mount succeeds -- no host-side writes to any non-unixnu partition.
 + */
