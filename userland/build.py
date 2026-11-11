@@ -14,6 +14,7 @@ import os
 from pathlib import Path, PurePosixPath
 import plistlib
 import posixpath
+import re
 import shutil
 import stat
 import struct
@@ -422,6 +423,36 @@ def ui(a):
     print(f'{library} -> {patch}')
 
 
+
+def launchd_cache(a):
+    """Keep selected jobs' event-publisher contracts in the deployed cache."""
+    patch = PROJECT / 'patches/xnu/0394-k60-launchd-cache.patch'
+    source = patch.read_text()
+    marker = '+static const unsigned char k60_launchd_cache[K60_LAUNCHD_CACHE_LEN] = {\n'
+    begin = source.index(marker) + len(marker)
+    end = source.index('+};', begin)
+    data = bytes(int(byte, 16) for byte in re.findall(r'0x([0-9a-fA-F]{2})\b', source[begin:end]))
+    cache = plistlib.loads(data)
+    restored = []
+    for path, job in cache['LaunchDaemons'].items():
+        descriptor = plistlib.loads((a.jobs / Path(path).name).read_bytes())
+        if 'PublishesEvents' in descriptor:
+            job['PublishesEvents'] = descriptor['PublishesEvents']
+            restored.append(job['Label'])
+    data = plistlib.dumps(cache, fmt=plistlib.FMT_BINARY)
+    rows = [f'+/* Generated from the selected 20G81 cache ({len(cache["LaunchDaemons"])} jobs); preserve event publishers. */',
+            f'+#define K60_LAUNCHD_CACHE_LEN {len(data)}', marker.rstrip('\n')]
+    rows.extend('+    ' + ','.join(f'0x{byte:02x}' for byte in data[i:i + 12]) + ','
+                for i in range(0, len(data), 12))
+    rows.append('+};')
+    header = source.index('@@ -0,0 +1,', source.index('+++ b/bsd/kern/k60_launchd_cache.h'))
+    patch.write_text(source[:header] + f'@@ -0,0 +1,{len(rows)} @@\n' + '\n'.join(rows) + '\n')
+    a.out.mkdir(parents=True, exist_ok=True)
+    (a.out / 'launchd.plist').write_bytes(data)
+    dump(a.out / 'launchd-cache.json', dict(jobs=len(cache['LaunchDaemons']),
+         restored_event_publishers=restored, bytes=len(data), patch=str(patch)))
+    print(f'{patch}: restored event publishers {restored}')
+
 def helper(a):
     out = a.out.resolve(); out.mkdir(parents=True, exist_ok=True)
     signature = compile_init(out, a.developer, out / 'init')
@@ -601,6 +632,9 @@ def main():
     sdk.add_argument('--sdk', type=Path, help='real iOS SDK for a Linux clang/LLD build')
     s.add_argument('--compiler', default='clang-18')
     s.add_argument('--linker', default='ld64.lld-18')
+    s = sub.add_parser('launchd_cache', help='retain event publishers in the selected service cache')
+    s.add_argument('--jobs', type=Path, required=True, help='prepared 20G81 LaunchDaemons directory')
+    s.add_argument('--out', type=Path, required=True)
     a = p.parse_args()
     globals()[a.mode](a)
 
