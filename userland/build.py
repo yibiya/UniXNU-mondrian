@@ -361,22 +361,65 @@ def compile_init(out, developer, destination):
     return init_signature
 
 
-def compile_ui(out, developer):
-    """Build the 20G81 adapter; no prebuilt 20F66 addresses/libraries."""
-    env = dict(os.environ, DEVELOPER_DIR=str(developer))
-    sdk = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], env=env, text=True).strip()
+def compile_ui(out, developer, *, sdk=None, compiler='clang-18', linker='ld64.lld-18'):
+    """Build the 20G81 adapter against a real iOS SDK, never declaration shims."""
+    env = dict(os.environ)
+    if sdk is None:
+        env['DEVELOPER_DIR'] = str(developer)
+        sdk = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], env=env, text=True).strip()
+        command = ['xcrun', '--sdk', 'iphoneos', 'clang']
+        link_flags = []
+    else:
+        sdk = sdk.resolve()
+        sdk_version = json.loads((sdk / 'SDKSettings.json').read_text())['Version']
+        command = [compiler]
+        link_flags = [f'--ld-path={shutil.which(linker) or linker}',
+                      f'-Wl,-platform_version,ios,16.6.1,{sdk_version}', '-Wl,-adhoc_codesign']
     destination = out / 'libpong-ui.dylib'
-    cmd = ['xcrun', '--sdk', 'iphoneos', 'clang', '-target', 'arm64-apple-ios16.6.1',
-           '-isysroot', sdk, '-Os', '-fblocks', '-dynamiclib', '-Wall', '-Wextra', '-Werror',
-           '-Wl,-no_fixup_chains', '-install_name', '/private/var/pong/libpong-ui.dylib',
+    cmd = [*command, '-target', 'arm64-apple-ios16.6.1',
+           '-isysroot', str(sdk), '-Os', '-fblocks', '-dynamiclib', '-Wall', '-Wextra', '-Werror',
+           *link_flags, '-Wl,-no_fixup_chains', '-install_name', '/private/var/pong/libpong-ui.dylib',
            '-framework', 'CoreFoundation', '-framework', 'CoreGraphics', '-lobjc',
            str(USERLAND / 'ui_compat.c'), str(USERLAND / 'icons_cpu.c'),
            str(USERLAND / 'touch.c'),
            '-o', str(destination)]
     run(cmd, env=env)
-    run(['codesign', '--force', '--sign', '-', '--pagesize', '4096', destination])
+    if developer is not None:
+        run(['codesign', '--force', '--sign', '-', '--pagesize', '4096', destination])
+    native_init_signature(destination.read_bytes())
     (out / 'ui-compile-command.json').write_text(json.dumps(cmd, indent=2) + '\n')
     return destination
+
+
+def embed_ui_library(library):
+    """Regenerate the existing 0340 array and its hunk, preserving its callsites."""
+    patch = PROJECT / 'patches/xnu/0340-k60-uilib-deploy.patch'
+    source = patch.read_text()
+    begin = source.index('+static const unsigned char k60_uilib_blob[] = {\n')
+    end = source.index('+};\n', begin) + len('+};\n')
+    data = library.read_bytes()
+    native_init_signature(data)
+    rows = ['+static const unsigned char k60_uilib_blob[] = {']
+    rows.extend('+    ' + ','.join(f'0x{byte:02x}' for byte in data[i:i + 12]) + ','
+                for i in range(0, len(data), 12))
+    rows.append('+};')
+    source = source[:begin] + '\n'.join(rows) + '\n' + source[end:]
+    lines = source.splitlines()
+    hunk = next(i for i, line in enumerate(lines) if line.startswith('@@ -0,0 +1,'))
+    stop = next(i for i in range(hunk + 1, len(lines)) if lines[i].startswith('--- a/'))
+    lines[hunk] = f'@@ -0,0 +1,{sum(line.startswith("+") for line in lines[hunk + 1:stop])} @@'
+    patch.write_text('\n'.join(lines) + '\n')
+    return patch
+
+
+def ui(a):
+    out = a.out.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    library = compile_ui(out, a.developer, sdk=a.sdk, compiler=a.compiler, linker=a.linker)
+    patch = embed_ui_library(library)
+    dump(out / 'ui-library.json', dict(library=str(library), bytes=library.stat().st_size,
+         signature=native_init_signature(library.read_bytes()), patch=str(patch)))
+    print(f'{library} -> {patch}')
 
 
 def helper(a):
@@ -551,6 +594,13 @@ def main():
         s = sub.add_parser(name); s.add_argument('--out', type=Path, required=True)
     s = sub.add_parser('helper'); s.add_argument('--out', type=Path, required=True)
     s.add_argument('--developer', type=Path, required=True)
+    s = sub.add_parser('ui', help='compile the UI library and refresh its embedded 0340 blob')
+    s.add_argument('--out', type=Path, required=True)
+    sdk = s.add_mutually_exclusive_group(required=True)
+    sdk.add_argument('--developer', type=Path)
+    sdk.add_argument('--sdk', type=Path, help='real iOS SDK for a Linux clang/LLD build')
+    s.add_argument('--compiler', default='clang-18')
+    s.add_argument('--linker', default='ld64.lld-18')
     a = p.parse_args()
     globals()[a.mode](a)
 
