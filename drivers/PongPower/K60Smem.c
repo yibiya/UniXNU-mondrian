@@ -93,6 +93,7 @@ int k60_smem_find(const K60Smem *s, const K60SmemPartition *p, uint16_t item, ui
             *offset = p->offset + at - bytes; *size = bytes - (pads & 65535);
             return K60SmemOk;
         }
+        if (at - bytes == down) return K60SmemMissing;
         if ((uint64_t)bytes + header > at || at - bytes - header < down) return K60SmemCorrupt;
         at -= bytes + header;
     }

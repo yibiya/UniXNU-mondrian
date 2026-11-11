@@ -256,9 +256,10 @@ static int handle_data(QcomGlink *g, uint16_t cmd, uint32_t rcid, uint32_t liid,
     if (avail < align8(16 + chunk)) return 0;
     QcomGlinkChannel *c = by_rcid(g, rcid);
     const unsigned index = liid - 1;
-    if (!c || !c->up || c->closing || !liid || index >= c->intent_count || !c->local[index].advertised) {
-        g->dropped++;
+    if (!c || !c->up || c->closing) {
+        g->dropped++; /* A late response in a quarantined/closed incarnation. */
     } else {
+        if (!liid || index >= c->intent_count || !c->local[index].advertised) return QcomGlinkCorrupt;
         if (c->local[index].busy || (cmd == QCOM_GLINK_TX_DATA && c->local[index].active) ||
             (cmd == QCOM_GLINK_TX_DATA_CONT && (!c->local[index].active ||
              (uint64_t)chunk + left != c->local[index].remaining))) return QcomGlinkCorrupt;
@@ -370,9 +371,14 @@ static int receive_one(QcomGlink *g)
         if (command(g, QCOM_GLINK_CLOSE_ACK, param1, 0)) return 0;
         if (c) {
             const int was = c->up;
-            if (c->open_sent == 1 && !c->closing) command(g, QCOM_GLINK_CLOSE, c->lcid, 0);
-            reset_channel(c);
+            if (!c->closing) {
+                if (c->open_sent == 1) command(g, QCOM_GLINK_CLOSE, c->lcid, 0);
+                c->closing = 2;
+            }
+            c->up = c->remote_open = 0;
             if (was) c->client.state(c->context, c, 0);
+            /* Do not reopen until OUR CLOSE is acknowledged. A crossed
+             * remote CLOSE must not erase a timeout's quarantined epoch. */
         }
         break;
     case QCOM_GLINK_CLOSE_ACK:
@@ -428,7 +434,11 @@ static int receive_one(QcomGlink *g)
         int granted = 0;
         if ((c = by_rcid(g, param1)) && c->up && param2 <= c->intent_size)
             for (unsigned k = 0; k < c->intent_count; ++k)
+                /* Keep enough room for INTENT and its ACK together. Otherwise
+                 * re-reading this command after backpressure would deny an
+                 * intent we already advertised for it. */
                 if (!c->local[k].advertised && !c->local[k].busy) {
+                    if (qcom_glink_tx_avail(&g->tx) < 24) return 0;
                     if (advertise(g, c, k)) return 0;
                     granted = 1;
                     break;

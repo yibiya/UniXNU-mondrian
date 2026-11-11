@@ -44,7 +44,8 @@ int k60_battery_config_parse(const uint8_t *p, size_t bytes, K60BatteryConfig *o
      * Reject a board record for another edge/SoC instead of partially matching. */
     if (c.remote_pid != 2 || c.ipcc_client != 3 || c.ipcc_signal != 0 ||
         c.desc_item != 478 || c.tx_item != 479 || c.rx_item != 480 || c.smp2p_item != 443 ||
-        c.protocol != K60_BATTERY_PROTOCOL_XIAOMI_MONDRIAN || c.charging_current_sign != 1)
+        c.protocol != K60_BATTERY_PROTOCOL_XIAOMI_MONDRIAN ||
+        (c.charging_current_sign != 0 && c.charging_current_sign != 1 && c.charging_current_sign != -1))
         return K60ConfigBadProtocol;
     *out = c;
     return K60ConfigOk;

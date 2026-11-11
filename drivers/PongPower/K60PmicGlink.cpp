@@ -8,6 +8,7 @@
 #include <kern/clock.h>
 #include <libkern/c++/OSSharedPtr.h>
 #include "K60PmicGlink.h"
+extern "C" { extern unsigned long gPhysBase, gPhysSize; }
 
 namespace {
 constexpr uint32_t kSmp2pMagic = 0x504d5324u;
@@ -111,7 +112,6 @@ bool K60PmicGlink::open(const K60BatteryConfig &c, const K60AdspGlinkHandoff &h,
     if (opened || !callbacks.state || !callbacks.receive || !owner || h.flags != K60AdspHandoffRequired || !h.epoch)
         return false;
     config = c; lease = h; client = callbacks; context = owner;
-    extern unsigned long gPhysBase, gPhysSize;
     if (k60_battery_range_overlaps(config.smem_base, config.smem_bytes, gPhysBase, gPhysSize) ||
         k60_battery_range_overlaps(config.adsp_base, config.adsp_bytes, gPhysBase, gPhysSize)) {
         error = -25;

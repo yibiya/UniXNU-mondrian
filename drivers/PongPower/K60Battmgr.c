@@ -42,7 +42,7 @@ static void zero(void *p, unsigned bytes)
 static void begin_cycle(K60Battmgr *b)
 {
     b->cursor = 0; b->fresh = b->completed = 0;
-    b->cycle_active = 1; b->refresh_due = 0;
+    b->cycle_active = 1; b->refresh_due = b->sample_dirty = 0;
 }
 void k60_battmgr_init(K60Battmgr *b, int sign, unsigned reply_type, unsigned reply_bytes)
 {
@@ -58,7 +58,7 @@ void k60_battmgr_channel_down(K60Battmgr *b)
 {
     b->valid = b->fresh = b->completed = b->last_fresh = b->last_completed = 0;
     b->flight = FLIGHT_NONE; b->cycle_active = b->subscribed = b->subscribe_due = 0;
-    b->refresh_due = b->poisoned = 0;
+    b->refresh_due = b->poisoned = b->sample_dirty = 0;
 }
 void k60_battmgr_channel_up(K60Battmgr *b)
 {
@@ -153,6 +153,7 @@ int k60_battmgr_receive(K60Battmgr *b, const uint8_t *data, unsigned bytes)
         const uint32_t property_group = le32(data + 12);
         if (property_group != OP_BATTERY && property_group != OP_USB && property_group != OP_WIRELESS &&
             property_group != 0x50 && property_group != 0x80) {b->ignored++; return K60BmIgnored;}
+        b->sample_dirty = 1;
         b->notifications++;
         k60_battmgr_refresh(b);
         return K60BmNotified;
@@ -205,14 +206,22 @@ int k60_battmgr_sample(const K60Battmgr *b, K60BatterySample *s)
         BIT(K60BmFull) | BIT(K60BmDesign) | BIT(K60BmCycles);
     const uint32_t source = BIT(K60BmUsbOnline) | BIT(K60BmUsbVoltage) | BIT(K60BmWirelessOnline);
     const uint32_t required = battery | source;
-    if (!s || b->poisoned || !b->charging_current_sign || (b->last_fresh & required) != required) return 0;
+    if (!s || b->poisoned || b->sample_dirty ||
+        (b->last_fresh & (source | BIT(K60BmPresent))) != (source | BIT(K60BmPresent))) return 0;
+    if (!b->value[K60BmPresent]) {
+        zero(s, sizeof(*s)); s->valid = b->last_fresh;
+        s->external = b->value[K60BmUsbOnline] || b->value[K60BmUsbVoltage] >= 4000000 || b->value[K60BmWirelessOnline];
+        return 1;
+    }
+    if (!b->charging_current_sign || (b->last_fresh & required) != required) return 0;
     /* UNKNOWN status is not a fabricated charging/discharging conclusion. */
-    if (!b->value[K60BmPresent] || !b->value[K60BmStatus]) return 0;
+    if (!b->value[K60BmStatus]) return 0;
     const uint32_t full = (uint32_t)b->value[K60BmFull], design = (uint32_t)b->value[K60BmDesign];
     if ((uint64_t)full * 2 < design || (uint64_t)full > (uint64_t)design * 3 / 2) return 0;
     zero(s, sizeof(*s));
     s->valid = b->last_fresh; s->present = 1;
     const int usb = b->value[K60BmUsbOnline] != 0 || b->value[K60BmUsbVoltage] >= 4000000;
+    s->usb_connected = usb;
     s->external = usb || b->value[K60BmWirelessOnline] != 0;
     const int status = b->value[K60BmStatus];
     s->charging = s->external && status == 1; s->full = s->external && status == 4;
@@ -225,6 +234,7 @@ int k60_battmgr_sample(const K60Battmgr *b, K60BatterySample *s)
     if (s->current_mah > s->full_mah) s->current_mah = s->full_mah;
     s->voltage_mv = (uint32_t)b->value[K60BmVoltage] / 1000;
     s->current_ma = b->charging_current_sign * (b->value[K60BmCurrent] / 1000);
+    if ((status == 2 && s->current_ma > 0) || (status == 1 && s->current_ma < 0)) return 0;
     s->temperature_hundredths = b->value[K60BmTemperature]; s->cycles = (uint32_t)b->value[K60BmCycles];
     s->time_remaining_min = -1;
     const unsigned tf = s->external ? K60BmTimeToFull : K60BmTimeToEmpty;

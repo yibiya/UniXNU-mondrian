@@ -21,6 +21,13 @@ extern "C" {
  * It must initialize the APSS FIFOs while ADSP is stopped, authenticate PAS1,
  * retain its power/XO/interconnect requirements and relinquish GLINK completely.
  * Neither the battery driver nor this parser authenticates or resets a DSP. */
+/* K6BH record offsets (all little endian, no native struct padding):
+ * 0 magic,4 version,8 bytes,12 flags;16 epoch(u64);
+ * 24 SMEM base(u64),32 SMEM bytes(u64),40 ADSP base(u64),48 ADSP bytes(u64);
+ * 56/60 descriptor offset/bytes,64/68 TX offset/bytes,72/76 RX offset/bytes;
+ * 80 APSS TX head(0),84 APSS RX tail(0),88 remote PID(2),92 SMP2P item(443),
+ * 96 captured remote restart flag,100 reserved(0). Only the genuine platform
+ * PAS1 owner may emit this lease; a config builder must never synthesize it. */
 enum {
     K60AdspAuthenticated = 1u << 0,
     K60AdspResourcesHeld = 1u << 1,
@@ -35,7 +42,7 @@ typedef struct {
     uint32_t remote_pid, ipcc_client, ipcc_signal;
     uint32_t desc_item, tx_item, rx_item, smp2p_item;
     uint32_t protocol;
-    int32_t charging_current_sign;
+    int32_t charging_current_sign; /* 0 until actual charging/discharging wire pair qualifies +/-1 */
 } K60BatteryConfig;
 
 typedef struct {

@@ -35,13 +35,13 @@ typedef struct {
     uint8_t notify_reply_type;
     int8_t charging_current_sign;
     uint8_t cursor, flight, cycle_active, subscribe_due, subscribed, refresh_due;
-    uint8_t poisoned;
+    uint8_t poisoned, sample_dirty;
     char model[K60_BATTMGR_MODEL_BYTES];
 } K60Battmgr;
 
 typedef struct {
     uint32_t valid;
-    int present, external, charging, full;
+    int present, external, charging, full, usb_connected;
     uint32_t capacity_hundredths, current_mah, full_mah, design_mah, cycles;
     uint32_t voltage_mv, adapter_mv, adapter_ma, adapter_type;
     int32_t current_ma, temperature_hundredths;
