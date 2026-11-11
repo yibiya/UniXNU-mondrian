@@ -85,6 +85,14 @@ python3 userland/build.py ui --developer /Applications/Xcode.app/Contents/Develo
 保持 20G81 ABI；[HakiOS 的 main-queue 初始化经验](https://github.com/oosexgang/hakios-xnu-kernel/blob/main/userland/src/inject_sb.c#L2249-L2262)
 说明依赖 UIApplication/RunLoop 的调用应等主循环可运行后执行，不照搬其 20F66 私有地址。
 
+选中 job 的缓存也必须保留 `PublishesEvents`。20G81 notifyd 只有收到 initial
+publisher barrier 后才连接 Mach listeners；缺少字段会触发 `Event publisher error`。
+恢复实际 prepared descriptors 的字段（保留其他缓存策略与全部选中 jobs）：
+
+```bash
+python3 userland/build.py launchd_cache --jobs /path/to/pong/LaunchDaemons --out ../work/cache
+```
+
 **路径铁则（重要）**：构建读取的是 `/tmp/usb-cdc-mainline/device`（= `/opt/k60/trees/usb-cdc-mainline/device`，同一 inode）。
 `/mnt/e/hackios/UniXNU-mondrian` 是**另一份 git 副本**。改补丁前必须 `ls -li` 对比 inode、`sha256sum` 比对两侧一致后才可构建。
 详见 `AGENTS.md` 铁律 12。
