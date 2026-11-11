@@ -393,15 +393,19 @@ wallpaper_aliases(void)
     while ((n = getdirentries(fd, entries, sizeof(entries), &position)) > 0) {
         size_t offset = 0;
         while (offset < (size_t)n) {
-            const struct dirent *entry = (const struct dirent *)(entries + offset);
+            struct dirent record;
+            const struct dirent *entry = &record;
             size_t header = offsetof(struct dirent, d_name);
+            if ((size_t)n - offset < header) { failed = 1; break; }
+            memcpy(&record, entries + offset, header);
             if ((size_t)n - offset < header || entry->d_reclen < header + 1 ||
                 entry->d_reclen > (size_t)n - offset || !entry->d_namlen ||
                 entry->d_namlen >= sizeof(entry->d_name) ||
                 header + entry->d_namlen + 1 > entry->d_reclen ||
-                entry->d_name[entry->d_namlen] != 0) {
+                entries[offset + header + entry->d_namlen] != 0) {
                 failed = 1; break;
             }
+            memcpy(record.d_name, entries + offset + header, entry->d_namlen + 1);
             offset += entry->d_reclen;
             if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
             size_t length = entry->d_namlen;
@@ -421,7 +425,7 @@ wallpaper_aliases(void)
             if (lstat(target, &st) == 0) {
                 ssize_t count = (st.st_mode & S_IFMT) == S_IFLNK ?
                     readlink(target, existing, sizeof(existing)) : -1;
-                if (count != (ssize_t)strlen(source) || memcmp(existing, source, (size_t)count)) {
+                if (count < 0 || count != (ssize_t)strlen(source) || memcmp(existing, source, (size_t)count)) {
                     printf("Pong init: wallpaper alias conflict %s\n", target);
                     failed = 1; break;
                 }

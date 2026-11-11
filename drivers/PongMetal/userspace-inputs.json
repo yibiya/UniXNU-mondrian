@@ -45,7 +45,8 @@
   "device_patches": {
     "mesa": [
       "patches/mesa/0001-pong-scoped-gpu-heap.patch",
-      "patches/mesa/0002-pong-allocation-pressure-reclaim.patch"
+      "patches/mesa/0002-pong-allocation-pressure-reclaim.patch",
+      "drivers/PongMetal/build-patches/0001-mesa-build-tests-gate.patch"
     ],
     "translator": [
       "patches/metal2vulkan/0008-pong-ios16-20G81-policy.patch",
