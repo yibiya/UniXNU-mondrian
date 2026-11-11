@@ -24,7 +24,7 @@ Redmi K60（代号 **mondrian**，高通 **SM8475**）的 UniXNU 设备支持仓
 | UFS / APFS 三窗（OS / SystemOS / Data） | ✅ | `PONG APFS: OS root binding PASS`、`K60DATA mounted ro=0 fstype=apfs` |
 | 显示首帧（1440×3200） | ✅ | `K60 DISPLAY: first frame presented (swap 1)` |
 | 背光（DCS 0x11/0x29/0x51） | ✅ | `K60 PANEL: bring-up complete` |
-| 锁屏 / SpringBoard | ✅ | `Pong UI: 20G81 compatibility library entered SpringBoard` |
+| 锁屏 / SpringBoard | 待验证 | `entered SpringBoard` 只证明兼容库加载；2026-11-11 cand5 未进入主循环，用户未看到 UI |
 | launchd 稳定 | ✅ | 禁用 8 个 App-cryptex job 后不再 `initproc exited` |
 | **实体键（电源/音量）** | 🔄 | 驱动已编译/链接/调用（`bsd_init.o` 有 `U _pong_buttons_init`），`configuration()` 结果不可观测 |
 | **触摸** | 🔄 | 时钟已修（QUP0 **SE1** 偏移 + HWCG 清除）；GENI SE FIFO 模式仍被拒；固件已从真机提取（`goodix_firmware_m11a.bin` 223,744 B，sha `1e647510…`） |
@@ -66,6 +66,24 @@ tr -d '\r' < E:/k60-work/scratch/buildv15.sh > /tmp/b.sh && bash /tmp/b.sh
 tr -d '\r' < E:/k60-work/scratch/packv15.sh > /tmp/p.sh && bash /tmp/p.sh
 #   → E:/k60-work/usb-a-stage/out/boot-v15-20261108.img
 ```
+
+UI 兼容库部署前必须同步源码和 `0340` 内嵌数组，不能只修改 `ui_compat.c`：
+
+```bash
+# Linux/WSL：使用真实 iOS SDK；不使用声明 shim 或 fake codesign
+python3 userland/build.py ui --sdk /path/to/iPhoneOS.sdk --out ../work/ui
+# macOS：使用 Xcode 的 iPhoneOS SDK
+python3 userland/build.py ui --developer /Applications/Xcode.app/Contents/Developer --out ../work/ui
+```
+
+此命令编译 `ui_compat.c`、`icons_cpu.c`、`touch.c`，校验 4 KiB 签名页，更新
+`patches/xnu/0340-k60-uilib-deploy.patch` 的数组与 hunk 长度，并保留部署调用点。
+提交补丁后重建内核。最终 FAT 中的内核必须包含这份库，并经过
+`scripts/patch-armcpu-validate.py --apply`；不能用未处理的 prelink 内核替换 payload。
+
+参考 [Pong iOS16 的真实用户态构建](https://github.com/Chengdong-Yu/UniXNU-pong/blob/7798f1e5f261e7121d01d7e4807ed73512737ded/userland/build.py)
+保持 20G81 ABI；[HakiOS 的 main-queue 初始化经验](https://github.com/oosexgang/hakios-xnu-kernel/blob/main/userland/src/inject_sb.c#L2249-L2262)
+说明依赖 UIApplication/RunLoop 的调用应等主循环可运行后执行，不照搬其 20F66 私有地址。
 
 **路径铁则（重要）**：构建读取的是 `/tmp/usb-cdc-mainline/device`（= `/opt/k60/trees/usb-cdc-mainline/device`，同一 inode）。
 `/mnt/e/hackios/UniXNU-mondrian` 是**另一份 git 副本**。改补丁前必须 `ls -li` 对比 inode、`sha256sum` 比对两侧一致后才可构建。
