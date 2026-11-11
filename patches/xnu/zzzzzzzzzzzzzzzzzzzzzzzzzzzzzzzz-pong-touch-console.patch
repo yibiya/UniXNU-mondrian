@@ -16,10 +16,10 @@ new file mode 100644
 index 0000000..b033b90
 --- /dev/null
 +++ b/bsd/dev/pong_goodix.c
-@@ -0,0 +1,1262 @@
-+/* Goodix Berlin-D / Pong SM8475. Adapted from HackiOS redwood_goodix.c
-+ * (APSL 2.0). Hardware resources are the Pong live DT, checked against the
-+ * NothingOSS cape pinctrl and waipio GCC source. No Redwood peripherals. */
+@@ -0,0 +1,1039 @@
++/* Goodix Berlin-D on Redmi K60 / SM8475. Adapted from HackiOS
++ * redwood_goodix.c (APSL 2.0) and the Pong driver. Board resources come
++ * from the K60 live FDT; Berlin framing follows the Linux transport. */
 +#include <pexpert/arm64/board_config.h>
 +#if defined(PONG)
 +#include <kern/clock.h>
@@ -32,15 +32,14 @@ index 0000000..b033b90
 +#include <pexpert/device_tree.h>
 +#include <sys/systm.h>
 +
-+
-+
 +extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-+extern vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
 +extern kern_return_t thread_terminate(thread_t thread);
 +
-+static vm_offset_t tlmm, gcc, se, rsc, cmd_db;
-+static uint64_t tlmm_phys, gcc_phys, se_phys, rsc_phys, cmd_db_phys;
-+static uint32_t pins[6], gpio_offset, max_x, max_y;
++static vm_offset_t gpio_pages[7], gcc_qup, gcc_core, gcc_vote, gcc_pll, se;
++static uint64_t tlmm_phys, gcc_phys, se_phys;
++static uint32_t pins[6], bitbang_pins[4], gpio_offset, avdd_gpio, max_x, max_y;
++static uint32_t touch_stage, touch_delay_ms, spi_hz, flip;
++static bool force_rcg, bitbang_wiring;
 +
 +static bool
 +property(DTEntry entry, const char *name, void *out, unsigned size)
@@ -55,14 +54,28 @@ index 0000000..b033b90
 +{
 +    DTEntry entry;
 +    if (SecureDTLookupEntry(NULL, "/arm-io/pong-touch", &entry) != kSuccess) return false;
++    /* GPIO fallback requires an independently established role tuple:
++     * MISO, MOSI, CLK, CS. The qup4 pad set alone proves no direction. */
++    bitbang_wiring = property(entry, "bitbang-pins", bitbang_pins, sizeof(bitbang_pins));
++    uint32_t mask = 0;
++    if (bitbang_wiring) {
++        for (unsigned i = 0; i < 4; i++) {
++            if (bitbang_pins[i] < 16 || bitbang_pins[i] > 19 || (mask & (1u << (bitbang_pins[i] - 16)))) {
++                bitbang_wiring = false;
++                break;
++            }
++            mask |= 1u << (bitbang_pins[i] - 16);
++        }
++        bitbang_wiring = bitbang_wiring && mask == 15 && bitbang_pins[3] == 19;
++    }
 +    return property(entry,"spi-base",&se_phys,8) && property(entry,"tlmm-base",&tlmm_phys,8) &&
-+        property(entry,"gcc-base",&gcc_phys,8) && property(entry,"rsc-base",&rsc_phys,8) &&
-+        property(entry,"cmd-db-base",&cmd_db_phys,8) && property(entry,"gpio-offset",&gpio_offset,4) &&
-+        property(entry,"pins",pins,sizeof(pins)) && property(entry,"max-x",&max_x,4) &&
-+        property(entry,"max-y",&max_y,4) && se_phys==0x990000 && tlmm_phys==0xf000000 &&
-+        gcc_phys==0x100000 && rsc_phys==0x17a20000 && cmd_db_phys==0x80860000 &&
++        property(entry,"gcc-base",&gcc_phys,8) && property(entry,"gpio-offset",&gpio_offset,4) &&
++        property(entry,"pins",pins,sizeof(pins)) && property(entry,"avdd-gpio",&avdd_gpio,4) &&
++        property(entry,"max-x",&max_x,4) && property(entry,"max-y",&max_y,4) &&
++        se_phys==0x990000 && tlmm_phys==0xf000000 && gcc_phys==0x100000 &&
 +        gpio_offset==0x100000 && pins[0]==16 && pins[1]==17 && pins[2]==18 &&
-+        pins[3]==19 && pins[4]==21 && pins[5]==20 && max_x==1080 && max_y==2412;
++        pins[3]==19 && pins[4]==21 && pins[5]==20 && avdd_gpio==71 &&
++        max_x==14400 && max_y==32000;
 +}
 +
 +static inline uint32_t
@@ -89,37 +102,46 @@ index 0000000..b033b90
 +{
 +	uint64_t deadline;
 +	clock_interval_to_deadline(ms, NSEC_PER_MSEC, &deadline);
-+	assert_wait_deadline((event_t)&cmd_db, THREAD_UNINT, deadline);
++	assert_wait_deadline((event_t)&touch_stage, THREAD_UNINT, deadline);
 +	thread_block(THREAD_CONTINUE_NULL);
 +}
 +
 +/* ---- pins (TLMM) ------------------------------------------------------------------------------- */
 +
 +#define TLMM_PHYS               tlmm_phys
-+/* K60_WINDOW_BUDGET: io_submap is IO_MAP_SIZE = 8 MiB for the WHOLE kernel
-+ * (osfmk/arm/io_map.c:65) and io_map() raises a panic on KERN_NO_SPACE instead
-+ * of returning NULL (kmem_alloc with KMA_NOFAIL -> __kmem_failed_panic). Asking
-+ * for 2 MiB here plus 448 KiB of GCC pushed the touch thread past the budget and
-+ * the boot died with an empty console, which looks like a register hang but is
-+ * really an out-of-address-space panic. Only GPIO_CFG/GPIO_IO are touched, and
-+ * they live at gpio_offset + 0x1000*n with n in {16,17,18,19,21,20}, so the
-+ * window must span 0x1000*21 + 4 = 0x15004. 0x20000 (128 KiB) covers every pin
-+ * with headroom and still saves 1.88 MiB of the shared submap.
-+ * P-64: an earlier 64 KiB value left pin 20 outside the mapping and the first
-+ * gpio_set() on it took a kernel data abort (far = base + 0x14004). */
-+#define TLMM_SIZE               0x20000UL
-+#define GPIO_CFG(n)             (tlmm + gpio_offset + 0x1000UL * (n))         /* [1:0] pull, [5:2] function, [8:6] drive, [9] output */
-+#define GPIO_IO(n)              (tlmm + gpio_offset + 0x1000UL * (n) + 4)     /* bit 0 in, bit 1 out */
++/* io_submap is shared with every other device. Map exactly GPIO16-21 and
++ * GPIO71, one 4 KiB page each; never create a biased pointer from a failed map. */
++#define IO_PAGE_SIZE            0x1000UL
++#define GPIO_PAGE(n)            gpio_pages[(n) == avdd_gpio ? 6u : (n) - 16u]
++#define GPIO_CFG(n)             (GPIO_PAGE(n))         /* [1:0] pull, [5:2] function, [8:6] drive, [9] output */
++#define GPIO_IO(n)              (GPIO_PAGE(n) + 4)     /* bit 0 in, bit 1 out */
++#define GPIO_IRQ_CFG(n)         (GPIO_PAGE(n) + 8)
++#define GPIO_IRQ_STATUS(n)      (GPIO_PAGE(n) + 12)
 +#define PULL_NONE               0
 +#define PULL_UP                 3
 +
-+#define PIN_MISO                pins[0]
-+#define PIN_MOSI                pins[1]
-+#define PIN_CLK                 pins[2]
++/* pins[0..3] are ascending qup4 pads. GPIO SPI uses separately proven
++ * directions: bitbang-pins is MISO/MOSI/CLK/CS, never a permutation probe. */
++#define PIN_MISO                bitbang_pins[0]
++#define PIN_MOSI                bitbang_pins[1]
++#define PIN_CLK                 bitbang_pins[2]
 +#define PIN_CS                  pins[3]
-+#define PIN_INT                 pins[4]      /* low = the chip has a report */
++#define PIN_INT                 pins[4]      /* active-low report hint, never a power-good indication */
 +#define PIN_RESET               pins[5]     /* low = in reset */
-+#define PIN_FUNCTION_SPI        1       /* "qup15" */
++#define PIN_FUNCTION_SPI        1           /* cape TLMM qup4 on GPIO16-19 */
++
++static bool
++pins_map(void)
++{
++    printf("Pong touch: mapping only TLMM GPIO16-21 and GPIO71 pages\n");
++    for (unsigned i = 0; i < 6; i++) {
++        vm_offset_t page = ml_io_map(TLMM_PHYS + gpio_offset + 0x1000UL * pins[i], IO_PAGE_SIZE);
++        if (!page) return false;
++        gpio_pages[pins[i] - 16] = page;
++    }
++    gpio_pages[6] = ml_io_map(TLMM_PHYS + gpio_offset + 0x1000UL * avdd_gpio, IO_PAGE_SIZE);
++    return gpio_pages[6] != 0;
++}
 +
 +static void
 +gpio_configure(unsigned pin, unsigned function, unsigned pull, unsigned ma, bool output)
@@ -147,187 +169,62 @@ index 0000000..b033b90
 +	gpio_configure(pin, 0, pull, ma, true);
 +}
 +
-+/* ---- the I/O supply (RPMh) ----------------------------------------------------------------------- */
++/* ---- K60 supplies ------------------------------------------------------------------------------- */
 +
-+#define CMD_DB_PHYS             cmd_db_phys
-+#define CMD_DB_SIZE             0x20000UL
-+#define RSC_PHYS                rsc_phys    /* the application processor's "DRV 2" */
-+#define RSC_SIZE                0x10000UL
-+#define TCS(reg)                (rsc + 0xd00 + (reg))           /* command slot set 0, an "active" one */
-+#define TCS_IRQ_ENABLE          0x00
-+#define TCS_IRQ_STATUS          0x04
-+#define TCS_IRQ_CLEAR           0x08
-+#define TCS_WAIT_FOR_COMPLETION 0x10
-+#define TCS_CONTROL             0x14
-+#define TCS_CONTROL_ENABLE      (1u << 16)
-+#define TCS_CONTROL_TRIGGER     (1u << 24)
-+#define TCS_STATUS              0x18            /* 0 while busy */
-+#define TCS_CMD_ENABLE          0x1c
-+#define TCS_CMD_MSGID(n)        (0x30 + 20 * (n))
-+#define TCS_CMD_ADDR(n)         (0x34 + 20 * (n))
-+#define TCS_CMD_DATA(n)         (0x38 + 20 * (n))
-+#define MSGID_WRITE_4_BYTES     0x10008
-+#define MSGID_RESPONSE          0x100
-+
-+#define VRM_VOLTAGE             0               /* a regulator's registers, from its address: millivolts */
-+#define VRM_ENABLE              4
-+#define VRM_MODE                8
-+#define VRM_MODE_LDO_HPM        7
-+
-+struct cmd_db_slave {
-+	uint16_t id, header_offset, data_offset, count, version, reserved[3];
-+};
-+struct cmd_db_header {
-+	uint32_t version;
-+	uint8_t magic[4];
-+	struct cmd_db_slave slave[8];
-+	uint32_t checksum, reserved;
-+	uint8_t data[];
-+};
-+struct cmd_db_entry {
-+	char id[8];
-+	uint32_t priority[2];
-+	uint32_t address;
-+	uint16_t length, offset;
-+};
-+
-+/* The RPMh address of a resource by its name in the command database the boot loader left; 0 = none. */
-+static uint32_t
-+rpmh_address(const char *name)
-+{
-+	const struct cmd_db_header *db = (const struct cmd_db_header *)cmd_db;
-+	char id[8] = { 0 };
-+
-+	if (db->magic[0] != 0xdb || db->magic[1] != 0x30 || db->magic[2] != 0x03 || db->magic[3] != 0x0c) {
-+		printf("goodix: no command database (magic %02x %02x %02x %02x)\n", db->magic[0], db->magic[1], db->magic[2],
-+		    db->magic[3]);
-+		return 0;
-+	}
-+	strlcpy(id, name, sizeof(id));
-+	for (unsigned s = 0; s < 8; s++) {
-+		const struct cmd_db_slave *slave = &db->slave[s];
-+		const struct cmd_db_entry *entry = (const struct cmd_db_entry *)(db->data + slave->header_offset);
-+
-+		if (slave->id == 0 || slave->header_offset >= CMD_DB_SIZE - 0x1000 || slave->count > 512 ||
-+            144u + slave->header_offset + slave->count * sizeof(*entry) > CMD_DB_SIZE) {
-+			continue;
-+		}
-+		for (unsigned i = 0; i < slave->count; i++) {
-+			if (memcmp(entry[i].id, id, sizeof(id)) == 0) {
-+				return entry[i].address;
-+			}
-+		}
-+	}
-+	return 0;
-+}
-+
-+static bool
-+rpmh_wait(uint32_t reg, uint32_t mask, uint32_t value, const char *what)
-+{
-+	for (int i = 0; i < 2000; i++) {
-+		if ((rd(TCS(reg)) & mask) == value) {
-+			return true;
-+		}
-+		sleep_us(100);
-+	}
-+	printf("goodix: RPMh: timeout waiting for %s (register %#x = %#x)\n", what, reg, rd(TCS(reg)));
-+	return false;
-+}
-+
-+/* Send up to three register writes to RPMh and wait until they are done. */
-+static bool
-+rpmh_write(const uint32_t *address, const uint32_t *data, unsigned count)
-+{
-+	uint32_t irq_enable = rd(TCS(TCS_IRQ_ENABLE));
-+	bool done;
-+
-+	/* the slot set must be idle, and switched off the way the hardware wants it: trigger, then enable */
-+	for (int i = 0; rd(TCS(TCS_STATUS)) == 0; i++) {
-+		if (i > 2000) {
-+			printf("goodix: RPMh: the command slots stay busy\n");
-+			return false;
-+		}
-+		sleep_us(100);
-+	}
-+	wr(TCS(TCS_CONTROL), rd(TCS(TCS_CONTROL)) & ~TCS_CONTROL_TRIGGER);
-+	wr(TCS(TCS_CONTROL), rd(TCS(TCS_CONTROL)) & ~TCS_CONTROL_ENABLE);
-+	wr(TCS(TCS_IRQ_CLEAR), 1);
-+	for (unsigned i = 0; i < count; i++) {
-+		wr(TCS(TCS_CMD_MSGID(i)), MSGID_WRITE_4_BYTES | MSGID_RESPONSE);
-+		wr(TCS(TCS_CMD_ADDR(i)), address[i]);
-+		wr(TCS(TCS_CMD_DATA(i)), data[i]);
-+	}
-+	wr(TCS(TCS_WAIT_FOR_COMPLETION), (1u << count) - 1);
-+	wr(TCS(TCS_CMD_ENABLE), (1u << count) - 1);
-+	wr(TCS(TCS_IRQ_ENABLE), irq_enable | 1);        /* the status bit follows the enable; the interrupt itself stays masked */
-+	wr(TCS(TCS_CONTROL), TCS_CONTROL_ENABLE);
-+	wr(TCS(TCS_CONTROL), TCS_CONTROL_ENABLE | TCS_CONTROL_TRIGGER);
-+
-+	done = rpmh_wait(TCS_IRQ_STATUS, 1, 1, "the request");
-+	wr(TCS(TCS_CONTROL), rd(TCS(TCS_CONTROL)) & ~TCS_CONTROL_TRIGGER);
-+	wr(TCS(TCS_CONTROL), rd(TCS(TCS_CONTROL)) & ~TCS_CONTROL_ENABLE);
-+	wr(TCS(TCS_CMD_ENABLE), 0);
-+	wr(TCS(TCS_WAIT_FOR_COMPLETION), 0);
-+	wr(TCS(TCS_IRQ_CLEAR), 1);
-+	wr(TCS(TCS_IRQ_ENABLE), irq_enable);
-+	return done;
-+}
-+
-+/* Pong DT: AVDD=pm8350c_l3 at 2.7 V, IOVDD=pm8350c_l12 at 1.8 V. */
-+static bool
++static void
 +io_supply_on(void)
 +{
-+    uint32_t avdd=rpmh_address("ldoc3"), iovdd=rpmh_address("ldoc12");
-+    if (!avdd || !iovdd || ((avdd>>16)&15)!=4 || ((iovdd>>16)&15)!=4) return false;
-+    uint32_t address[3]={iovdd,iovdd+4,iovdd+8}, data[3]={1800,1,7};
-+    if (!rpmh_write(address,data,3)) return false;
-+    sleep_ms(3);
-+    address[0]=avdd;address[1]=avdd+4;address[2]=avdd+8;data[0]=2700;
-+    if (!rpmh_write(address,data,3)) return false;
-+    sleep_ms(15);return true;
++    /* AVDD is a load-switch GPIO. IOVDD is pm8350c_l2 at 1.8 V, not the
++     * Pong ldoc3/ldoc12 pair. No RSC, TCS or command-database access is safe
++     * on this board. Retained IOVDD is a prerequisite, NOT measured power. */
++    printf("Pong touch: require retained pm8350c_l2 IOVDD 1.8 V; no rail vote or power-good claim\n");
++    gpio_output(avdd_gpio, true, PULL_NONE, 6);
++    sleep_ms(15);
++    printf("Pong touch: AVDD GPIO%u enabled, IRQ=%u (level only)\n", avdd_gpio, gpio_get(PIN_INT));
 +}
 +
 +/* ---- clocks (GCC) -------------------------------------------------------------------------------- */
 +
 +#define GCC_PHYS                gcc_phys
-+#define GCC_SIZE                0x70000UL
-+#define GCC_VOTE                (gcc + 0x62008)         /* the application processor's votes */
++#define GCC_QUP_OFFSET          0x27000UL
++#define GCC_CORE_OFFSET         0x33000UL
++#define GCC_VOTE_OFFSET         0x62000UL
++#define GCC_VOTE                (gcc_vote + 0x0008)    /* application processor branch votes */
 +#define VOTE_QUP0_CORE_2X       (1u << 9)
 +#define VOTE_QUP0_CORE          (1u << 8)
 +#define VOTE_QUP0_M_AHB         (1u << 6)
 +#define VOTE_QUP0_S_AHB         (1u << 7)
-+#define VOTE_QUP0_SE4           (1u << 14)             /* Pong: wrapper 0 serial engine 4 */
-+#define GCC_QUP0_CORE_CBCR      (gcc + 0x33000)         /* gcc_qupv3_wrap0_core_clk, no hwcg */
-+#define GCC_QUP0_CORE_2X_CBCR   (gcc + 0x3300c)         /* gcc_qupv3_wrap0_core_2x_clk, no hwcg */
-+#define GCC_QUP0_M_AHB_CBCR     (gcc + 0x27004)         /* bit 31: the clock is off, bit 1: hwcg */
-+#define GCC_QUP0_S_AHB_CBCR     (gcc + 0x27008)
-+#define GCC_QUP0_SE4_CBCR       (gcc + 0x274dc)
-+#define GCC_QUP0_SE4_CMD        (gcc + 0x274e4)         /* bit 0: take the new configuration */
-+#define GCC_QUP0_SE4_CFG        (gcc + 0x274e8)         /* [4:0] 2*divider-1, [10:8] source, [13:12] mode */
-+#define GCC_QUP0_SE4_DFSR       (gcc + 0x274f8)         /* bit 0: the engine chooses among preset rates itself */
-+#define GCC_QUP0_SE4_PERF_CFG(l) (gcc + 0x27500 + 4 * (l))
-+#define GCC_QUP0_SE4_PERF_M(l)  (gcc + 0x27540 + 4 * (l))
-+#define GCC_QUP0_SE4_PERF_N(l)  (gcc + 0x27580 + 4 * (l))
++#define VOTE_QUP0_SE4           (1u << 14)             /* wrapper 0 serial engine 4 */
++#define VOTE_QUP0_ALL           (VOTE_QUP0_CORE_2X | VOTE_QUP0_CORE | VOTE_QUP0_M_AHB | VOTE_QUP0_S_AHB | VOTE_QUP0_SE4)
++#define GCC_QUP0_CORE_CBCR      (gcc_core + 0x0000)
++#define GCC_QUP0_CORE_2X_CBCR   (gcc_core + 0x000c)
++#define GCC_QUP0_M_AHB_CBCR     (gcc_qup + 0x0004)      /* bit 31 off, bit 1 hardware clock gating */
++#define GCC_QUP0_S_AHB_CBCR     (gcc_qup + 0x0008)
++#define GCC_QUP0_SE4_CBCR       (gcc_qup + 0x04dc)
++#define GCC_QUP0_SE4_CMD        (gcc_qup + 0x04e4)
++#define GCC_QUP0_SE4_CFG        (gcc_qup + 0x04e8)
++#define GCC_QUP0_SE4_DFSR       (gcc_qup + 0x04f8)
++#define GCC_QUP0_SE4_PERF_CFG(l) (gcc_qup + 0x0500 + 4 * (l))
++#define GCC_QUP0_SE4_PERF_M(l)  (gcc_qup + 0x0540 + 4 * (l))
++#define GCC_QUP0_SE4_PERF_N(l)  (gcc_qup + 0x0580 + 4 * (l))
 +#define CLOCK_OFF               (1u << 31)
 +#define HWCG                    (1u << 1)               /* gcc-sm8450.c: hwcg_bit = 1 on the AHB branches */
 +/* gcc_gpll0 (gcc-sm8450.c:50-55): enable_reg 0x62018 BIT(0), offset 0x0, LUCID_EVO.
 + * PLL_MODE = offset + 0x0 and its lock indication is BIT(31) (clk-alpha-pll.c:16,34). */
-+#define GCC_GPLL0_ENABLE        (gcc + 0x62018)
++#define GCC_GPLL0_ENABLE        (gcc_vote + 0x0018)
 +#define VOTE_GPLL0              (1u << 0)
-+#define GCC_GPLL0_MODE          (gcc + 0x0000)
++#define GCC_GPLL0_MODE          (gcc_pll + 0x0000)
 +#define PLL_LOCK                (1u << 31)
 +#define XO_HZ                   19200000
++#define CMD_UPDATE              (1u << 0)
++#define CMD_ROOT_EN             (1u << 1)
++#define CMD_ROOT_OFF            (1u << 31)
 +
 +static uint32_t se_source_hz, se_clock_select;
 +
-+/* K60_DIAG_STAGE: k60_touch_se=<n> selects how far bring_up() is allowed to go.
-+ * Nothing else changes: with the boot-arg absent the driver still returns
-+ * before starting the thread. See DIAGNOSIS-GUIDE.md for the stage table. */
-+static unsigned touch_stage;
-+/* K60_FIFO_ESCAPE: see geni_spi_init(). 0 reproduces the old behaviour. */
-+int k60_touch_allow_fifo_disabled;
-+/* K60_FORCE_RCG: 1 = program the RCG divider even when DFS mode is advertised. */
-+int k60_touch_force_rcg;
++/* Existing staged argument: 1 maps, 2 pins/AVDD, 3 GCC, 4 +core clocks,
++ * 5 identify only, 6 real input, 7 GPIO-only identification (no GCC/SE).
++ * The normal K60 path is stage 6, with an 8-second deferred start. */
 +
 +static uint32_t
 +rcg_rate(uint32_t cfg, uint32_t m, uint32_t not_n_minus_m)
@@ -359,174 +256,102 @@ index 0000000..b033b90
 +}
 +
 +static bool
++clocks_map(void)
++{
++    printf("Pong touch: mapping GCC QUP/PLL/vote pages, no serial-engine access\n");
++    gcc_qup = ml_io_map(GCC_PHYS + GCC_QUP_OFFSET, IO_PAGE_SIZE);
++    gcc_vote = ml_io_map(GCC_PHYS + GCC_VOTE_OFFSET, IO_PAGE_SIZE);
++    gcc_pll = ml_io_map(GCC_PHYS, IO_PAGE_SIZE);
++    if (!gcc_qup || !gcc_vote || !gcc_pll) return false;
++    if (touch_stage >= 4) {
++        gcc_core = ml_io_map(GCC_PHYS + GCC_CORE_OFFSET, IO_PAGE_SIZE);
++        if (!gcc_core) return false;
++    }
++    return true;
++}
++
++static bool
++clock_wait(vm_offset_t address, uint32_t mask, uint32_t value)
++{
++    for (unsigned i = 0; i < 10000; i++) {
++        if ((rd(address) & mask) == value) return true;
++        sleep_us(10);
++    }
++    return false;
++}
++
++static bool
 +clocks_on(void)
 +{
-+	uint32_t m_ahb = 0, s_ahb = 0, core = 0, core2x = 0, se4 = 0, vote;
-+	const char *problem = NULL;
-+	bool ok = false;
++    uint32_t m_ahb = 0, s_ahb = 0, core = 0, core2x = 0, se4 = 0;
++    bool ready = false;
 +
-+	/* K60_DIAG_STAGE.  A boot that dies produces no console at all, and the
-+	 * ramoops ring does not survive the reset (every single capture in
-+	 * evidence/ prints "K60PREV none"), so a printf-only probe cannot be read
-+	 * back.  The only per-step observable is therefore "did the whole boot
-+	 * survive", so every group of accesses sits behind its own stage number.
-+	 *
-+	 *   1  GPIO reset/int only                      (usblog-20261108-213652 proved it)
-+	 *   2  QUP0 vote + DFSR + SE4 RCG + M/S/SE4 CBCR (proved in 221038 / 233955)
-+	 *   3  GPLL0: RMW of 0x62018 and read of 0x100000   <-- never executed before
-+	 *   4  CORE / CORE_2X CBCR at 0x33000 / 0x3300c     <-- never executed before
-+	 *   5  geni_spi_init(): first touch of the 0x990000 window
-+	 *   6  io_supply_on(): the RPMh RSC writes
-+	 */
-+	printf("Pong touch: DIAG clocks entry stage=%u\n", touch_stage);
-+	if (touch_stage < 3) {
-+		printf("Pong touch: DIAG stop in clocks_on (no GCC access)\n");
-+		return false;
-+	}
++    printf("Pong touch: GCC GPLL0 vote at %#llx\n", (unsigned long long)(GCC_PHYS + 0x62018));
++    wr(GCC_GPLL0_ENABLE, rd(GCC_GPLL0_ENABLE) | VOTE_GPLL0);
++    if (!clock_wait(GCC_GPLL0_MODE, PLL_LOCK, PLL_LOCK)) {
++        printf("Pong touch: GPLL0 did not lock (mode %#x); refusing SE access\n", rd(GCC_GPLL0_MODE));
++        return false;
++    }
++    wr(GCC_VOTE, rd(GCC_VOTE) | VOTE_QUP0_ALL);
++    if ((rd(GCC_VOTE) & VOTE_QUP0_ALL) != VOTE_QUP0_ALL) {
++        printf("Pong touch: GCC refused QUP0 vote %#x\n", rd(GCC_VOTE));
++        return false;
++    }
 +
-+	if (touch_stage >= 3) {
-+		/* stage 3: the two accesses this round introduced.  GPLL0 feeds
-+		 * gcc_qupv3_wrap0_s4_clk_src (gcc-sm8450.c gcc_parent_map_0:
-+		 * 0 TCXO, 1 GPLL0 main, 6 GPLL0 even); 0x62018 bit0 is its enable
-+		 * (gcc-sm8450.c:39-47), 0x0 is PLL_MODE with lock at bit31. */
-+		printf("Pong touch: DIAG s3 pre-gpll0 (first access 0x%llx)\n",
-+		    (unsigned long long)(GCC_PHYS + 0x62018));
-+		wr(GCC_GPLL0_ENABLE, rd(GCC_GPLL0_ENABLE) | VOTE_GPLL0);
-+		printf("Pong touch: DIAG s3 gpll0 enable ok\n");
-+		for (int i = 0; i < 10000; i++) {
-+			if (rd(GCC_GPLL0_MODE) & PLL_LOCK) break;
-+			sleep_us(10);
-+		}
-+		printf("Pong touch: DIAG s3 gpll0 vote=%08x mode=%08x\n",
-+		    rd(GCC_GPLL0_ENABLE), rd(GCC_GPLL0_MODE));
-+	}
++    /* clk-rcg2's shared RCG sequence forces the root before changing
++     * configuration. ROOT_OFF is status, never the enable request. */
++    wr(GCC_QUP0_SE4_CMD, rd(GCC_QUP0_SE4_CMD) | CMD_ROOT_EN);
++    if (!clock_wait(GCC_QUP0_SE4_CMD, CMD_ROOT_OFF, 0)) {
++        printf("Pong touch: SE4 root did not turn on; refusing SE access\n");
++        return false;
++    }
++    se_source_hz = 0;
++    se_clock_select = 0;
++    if ((rd(GCC_QUP0_SE4_DFSR) & 1) && !force_rcg) {
++        /* Keep the vendor DFS tables intact and select a real rate through
++         * GENI_CLK_SEL. Never infer axes or protocol from clock registers. */
++        for (uint32_t level = 0; level < 8; level++) {
++            uint32_t hz = rcg_rate(rd(GCC_QUP0_SE4_PERF_CFG(level)), rd(GCC_QUP0_SE4_PERF_M(level)),
++                rd(GCC_QUP0_SE4_PERF_N(level)));
++            if (hz >= spi_hz && (!se_source_hz || hz < se_source_hz)) {
++                se_source_hz = hz;
++                se_clock_select = level;
++            }
++        }
++        if (!se_source_hz) {
++            printf("Pong touch: no usable SE4 DFS rate; refusing SE access\n");
++            return false;
++        }
++    } else {
++        /* TCXO, undivided. CFG bit20 is hardware clock control; preserve
++         * unrelated fields. ROOT_OFF is read-only: ROOT_EN is the request. */
++        wr(GCC_QUP0_SE4_CFG, (rd(GCC_QUP0_SE4_CFG) & ~0x371fu) | (1u << 20) | 1u);
++        se_source_hz = XO_HZ;
++    }
++    wr(GCC_QUP0_SE4_CMD, rd(GCC_QUP0_SE4_CMD) | CMD_ROOT_EN | CMD_UPDATE);
++    if (!clock_wait(GCC_QUP0_SE4_CMD, CMD_UPDATE | CMD_ROOT_OFF, 0)) {
++        printf("Pong touch: SE4 root/update timeout (cmd %#x); refusing SE access\n", rd(GCC_QUP0_SE4_CMD));
++        return false;
++    }
 +
-+	printf("Pong touch: DIAG s2 pre-vote (first access 0x%llx)\n",
-+	    (unsigned long long)(GCC_PHYS + 0x62008));
-+	vote = rd(GCC_VOTE);
-+	printf("Pong touch: DIAG s2 vote=%08x\n", vote);
-+	wr(GCC_VOTE, vote | VOTE_QUP0_CORE_2X | VOTE_QUP0_CORE | VOTE_QUP0_M_AHB | VOTE_QUP0_S_AHB);
-+	printf("Pong touch: DIAG s2 post-vote\n");
-+	extern int k60_touch_force_rcg;
-+	if ((rd(GCC_QUP0_SE4_DFSR) & 1) && !k60_touch_force_rcg) {
-+		/* K60_PERF_DUMP: the clock never starts (cbcr bit30=0) and dfsr bit0=1
-+		 * says the RCG is in DFS mode, so print every preset level: cfg/m/n and
-+		 * the rate rcg_rate() derives. This is what tells us whether a usable
-+		 * level exists at all and which one the hardware is actually on. */
-+		for (uint32_t level = 0; level < 8; level++) {
-+			uint32_t pc = rd(GCC_QUP0_SE4_PERF_CFG(level));
-+			uint32_t pm = rd(GCC_QUP0_SE4_PERF_M(level));
-+			uint32_t pn = rd(GCC_QUP0_SE4_PERF_N(level));
-+			printf("Pong touch: PERF[%u] cfg=%#x m=%#x n=%#x hz=%u\n",
-+			    level, pc, pm, pn, rcg_rate(pc, pm, pn));
-+		}
-+		/* preset rates: the lowest that is at least 4 MHz */
-+		for (uint32_t level = 0; level < 8; level++) {
-+			uint32_t hz = rcg_rate(rd(GCC_QUP0_SE4_PERF_CFG(level)), rd(GCC_QUP0_SE4_PERF_M(level)),
-+			    rd(GCC_QUP0_SE4_PERF_N(level)));
-+
-+			if (hz >= 4000000 && (se_source_hz == 0 || hz < se_source_hz)) {
-+				se_source_hz = hz;
-+				se_clock_select = level;
-+			}
-+		}
-+		if (se_source_hz == 0) {
-+			problem = "no usable preset clock rate";
-+			goto out;
-+		}
-+		/* K60_ROOT_ON: the real blocker is CMD_ROOT_OFF (CMD bit31), not
-+		 * DFS_EN. Linux clk-rcg2.c:74 says the root is enabled only when
-+		 * (cmd & CMD_ROOT_OFF) == 0; our CMD reads 0x80000000, i.e. the RCG
-+		 * root is switched OFF, so no rate -- DFS or not -- produces a clock.
-+		 * DFS_EN itself is DFSR bit0 and already reads 1 (dfsr=0x21).
-+		 * Clearing ROOT_OFF and committing with CMD_UPDATE (CMD bit0) is the
-+		 * documented enable sequence (clk-rcg2.c:118-128). */
-+		printf("Pong touch: ROOT_ON pre cmd=%#x cbcr=%#x\n",
-+		    rd(GCC_QUP0_SE4_CMD), rd(GCC_QUP0_SE4_CBCR));
-+		wr(GCC_QUP0_SE4_CMD, rd(GCC_QUP0_SE4_CMD) & ~(1u << 31));
-+		wr(GCC_QUP0_SE4_CMD, rd(GCC_QUP0_SE4_CMD) | 1u);
-+		for (int i = 0; i < 500 && (rd(GCC_QUP0_SE4_CMD) & 1u); i++) {
-+			sleep_us(10);
-+		}
-+		printf("Pong touch: ROOT_ON post cmd=%#x cbcr=%#x\n",
-+		    rd(GCC_QUP0_SE4_CMD), rd(GCC_QUP0_SE4_CBCR));
-+	} else {
-+		/* the crystal, undivided: nothing else has to be running */
-+		/* gcc_qupv3_wrap0_s4_clk_src sets hw_clk_ctrl (clk-rcg2.c:553-555, CFG bit 20),
-+		 * so preserve it. hid_width is 5: the divider is bits [4:0] within 0x371f. */
-+		printf("Pong touch: DIAG s2 pre-rcg\n");
-+		wr(GCC_QUP0_SE4_CFG, (rd(GCC_QUP0_SE4_CFG) & ~0x371fu) | (1u << 20) | 1);
-+		wr(GCC_QUP0_SE4_CMD, rd(GCC_QUP0_SE4_CMD) | 1);
-+		for (int i = 0; i < 500 && (rd(GCC_QUP0_SE4_CMD) & 1); i++) {
-+			sleep_us(10);
-+		}
-+		printf("Pong touch: DIAG s2 post-rcg cmd=%08x\n", rd(GCC_QUP0_SE4_CMD));
-+		if (rd(GCC_QUP0_SE4_CMD) & 1) {
-+			problem = "the serial engine's clock does not take its configuration";
-+			goto out;
-+		}
-+		se_source_hz = XO_HZ;
-+		se_clock_select = 0;
-+	}
-+	wr(GCC_VOTE, rd(GCC_VOTE) | VOTE_QUP0_SE4);
-+	/* 2. Verify the branches before anything reads the engine.
-+	 * M_AHB and S_AHB are hardware-clock-gated (bit1 set): such a branch reports CLK_OFF
-+	 * while idle and wakes on access, so CLK_OFF alone does NOT mean "not running"
-+	 * (clk-branch.c:61-72, TouchProbe.cpp:404-406). */
-+	printf("Pong touch: DIAG s2 pre-cbcr\n");
-+	for (int i = 0; i < 2000; i++) {
-+		m_ahb = rd(GCC_QUP0_M_AHB_CBCR);
-+		s_ahb = rd(GCC_QUP0_S_AHB_CBCR);
-+		se4 = rd(GCC_QUP0_SE4_CBCR);
-+		ok = cbcr_running(m_ahb) && cbcr_running(s_ahb) && !(se4 & CLOCK_OFF);
-+		if (ok) break;
-+		sleep_us(10);
-+	}
-+	printf("Pong touch: DIAG s2 post-cbcr m=%08x s=%08x se=%08x ok=%u\n",
-+	    m_ahb, s_ahb, se4, ok);
-+
-+	if (touch_stage < 4) {
-+		printf("Pong touch: DIAG stop before CORE/CORE_2X\n");
-+		goto out;
-+	}
-+
-+	/* stage 4: the QUP0 core branches.  Offset 0x33000 / 0x3300c per
-+	 * gcc-sm8450.c:1939-1947 and 1926-1934; halt_check BRANCH_HALT_VOTED. */
-+	printf("Pong touch: DIAG s4 pre-core (0x%llx, 0x%llx)\n",
-+	    (unsigned long long)(GCC_PHYS + 0x33000), (unsigned long long)(GCC_PHYS + 0x3300c));
-+	core = rd(GCC_QUP0_CORE_CBCR);
-+	printf("Pong touch: DIAG s4 core=%08x\n", core);
-+	core2x = rd(GCC_QUP0_CORE_2X_CBCR);
-+	printf("Pong touch: DIAG s4 core2x=%08x\n", core2x);
-+	ok = ok && !(core & CLOCK_OFF) && !(core2x & CLOCK_OFF);
-+	printf("Pong touch: DIAG s4 verdict ok=%u\n", ok);
-+
-+out:
-+	vote = rd(GCC_VOTE);
-+	/* The CORE pair is only printed when its stage allowed the read: stage 1 and
-+	 * 2 must touch nothing that has never been touched on a K60, otherwise the
-+	 * staged probe would reintroduce the very doubt it is meant to remove. */
-+	if (touch_stage >= 4) {
-+		printf("Pong touch: clocks vote=%08x cbcr m=%08x s=%08x se=%08x core=%08x core2x=%08x\n",
-+		    vote, rd(GCC_QUP0_M_AHB_CBCR), rd(GCC_QUP0_S_AHB_CBCR), rd(GCC_QUP0_SE4_CBCR),
-+		    rd(GCC_QUP0_CORE_CBCR), rd(GCC_QUP0_CORE_2X_CBCR));
-+	} else if (touch_stage >= 2) {
-+		printf("Pong touch: clocks vote=%08x cbcr m=%08x s=%08x se=%08x core=-- core2x=--\n",
-+		    vote, rd(GCC_QUP0_M_AHB_CBCR), rd(GCC_QUP0_S_AHB_CBCR), rd(GCC_QUP0_SE4_CBCR));
-+	} else {
-+		printf("Pong touch: clocks vote=(not read) no GCC register touched\n");
-+	}
-+	printf("Pong touch: clocks se4 cfg=%08x cmd=%08x dfsr=%08x src_hz=%u sel=%u\n",
-+	    rd(GCC_QUP0_SE4_CFG), rd(GCC_QUP0_SE4_CMD), rd(GCC_QUP0_SE4_DFSR), se_source_hz, se_clock_select);
-+	if (problem) {
-+		printf("Pong touch: clocks verdict=halted (%s)\n", problem);
-+	} else {
-+		printf("Pong touch: clocks verdict=%s\n", ok ? "running" : "halted");
-+	}
-+	if (!ok) {
-+		printf("Pong touch: clocks halted, refusing to touch serial engine %#llx\n", se_phys);
-+	}
-+	return ok;
++    printf("Pong touch: checking GCC QUP0 clocks, stage %u\n", touch_stage);
++    for (unsigned i = 0; i < 2000; i++) {
++        m_ahb = rd(GCC_QUP0_M_AHB_CBCR);
++        s_ahb = rd(GCC_QUP0_S_AHB_CBCR);
++        se4 = rd(GCC_QUP0_SE4_CBCR);
++        ready = cbcr_running(m_ahb) && cbcr_running(s_ahb) && !(se4 & CLOCK_OFF);
++        if (touch_stage >= 4) {
++            core = rd(GCC_QUP0_CORE_CBCR);
++            core2x = rd(GCC_QUP0_CORE_2X_CBCR);
++            ready = ready && !(core & CLOCK_OFF) && !(core2x & CLOCK_OFF);
++        }
++        if (ready) break;
++        sleep_us(10);
++    }
++    printf("Pong touch: clocks vote=%#x m=%#x s=%#x se4=%#x core=%#x core2x=%#x src=%u sel=%u\n",
++        rd(GCC_VOTE), m_ahb, s_ahb, se4, core, core2x, se_source_hz, se_clock_select);
++    if (!ready) printf("Pong touch: clocks not ready; refusing serial-engine access\n");
++    return ready;
 +}
 +
 +/* ---- SPI through the serial engine (GENI) ---------------------------------------------------------- */
@@ -587,36 +412,23 @@ index 0000000..b033b90
 +
 +/* 0 = ready; otherwise why the engine cannot be used */
 +static const char *
-+geni_spi_init(uint32_t hz)
++geni_spi_init(uint32_t hz, bool *gpio_spi)
 +{
-+	uint32_t divider;
-+
-+	if ((rd(GENI_FW_REVISION_RO) >> 8 & 0xff) != 1) {
-+		return "the serial engine has no SPI firmware";
++	uint32_t divider, fw = rd(GENI_FW_REVISION_RO), interfaces = rd(GENI_IF_DISABLE_RO);
++	*gpio_spi = (interfaces & 1) != 0;
++	printf("Pong touch: SE4 firmware=%#x protocol=%u interfaces=%#x\n", fw, (fw >> 8) & 0xff, interfaces);
++	/* Vendor GENI selects GSI when FIFO_IF_DISABLE is set. Never force FIFO,
++	 * invent a depth or access its data path; use the physical GPIO bus. */
++	if (*gpio_spi) return "the serial engine's FIFO interface is disabled";
++	if ((fw >> 8 & 0xff) != 1) return "the serial engine has no SPI firmware";
++	uint32_t geometry = rd(SE_HW_PARAM_0);
++	fifo_depth = geometry >> 16 & 0x3f;
++	if (fifo_depth < 4 || ((geometry >> 24) & 0x3f) != 32) {
++		return "the serial engine reports no usable 32-bit FIFO";
 +	}
-+	/* K60_FIFO_ESCAPE: the board reports FIFO_IF_DISABLE (0x064 bit0 = 1).
-+	 * Official QcomGeniSpi has two escape hatches (GeniSpi.c:80): use_dma, or
-+	 * allow_fifo_disabled ("try FIFO mode even when FIFO_IF_DISABLE is set",
-+	 * GeniSpi.h:208). The DMA path needs SE DMA + SMMU work; the flag costs one
-+	 * boot and tells us whether the engine answers at all. Default 0 keeps the
-+	 * previous behaviour byte for byte. */
-+	extern int k60_touch_allow_fifo_disabled;
-+	if ((rd(GENI_IF_DISABLE_RO) & 1) && !k60_touch_allow_fifo_disabled) {
-+		return "the serial engine's FIFO interface is disabled";
-+	}
-+	if (rd(GENI_IF_DISABLE_RO) & 1) {
-+		printf("Pong touch: FIFO_IF_DISABLE set but k60_touch_fifo=1, trying anyway\n");
-+	}
-+	fifo_depth = rd(SE_HW_PARAM_0) >> 16 & 0x3f;
-+	printf("Pong touch: GENI hw_param0=%#x fifo_depth=%u if_disable=%#x\n",
-+	    rd(SE_HW_PARAM_0), fifo_depth, rd(GENI_IF_DISABLE_RO));
-+	if (fifo_depth < 4 && !k60_touch_allow_fifo_disabled) {
-+		return "the serial engine reports no FIFO";
-+	}
-+	if (fifo_depth < 4) {
-+		printf("Pong touch: fifo_depth=%u < 4 but k60_touch_fifo=1, using 4\n", fifo_depth);
-+		fifo_depth = 4;
-+	}
++	printf("Pong touch: GENI FIFO depth=%u, width=32 bits\n", fifo_depth);
++	if (rd(GENI_STATUS) & 1) return "the serial engine has an active command";
++	wr(SE_IRQ_EN, 0);       /* SPI605 has no handler: disable SE outputs, not pollable status. */
 +	wr(SE_GSI_EVENT_EN, 0);
 +	wr(GENI_M_IRQ_CLEAR, 0xffffffff);
 +	wr(GENI_S_IRQ_CLEAR, 0xffffffff);
@@ -630,9 +442,9 @@ index 0000000..b033b90
 +	wr(GENI_RX_WATERMARK, fifo_depth - 3);
 +	wr(GENI_RX_RFR_WATERMARK, fifo_depth - 2);
 +	wr(GENI_TX_WATERMARK, 0);
-+	/* the status bits we poll follow these enables; the interrupt itself stays masked at the GIC */
-+	wr(SE_IRQ_EN, rd(SE_IRQ_EN) | 0xf);
-+	wr(GENI_M_IRQ_EN, rd(GENI_M_IRQ_EN) | 0x7fc0007f);
++	/* Local status sources stay enabled for polling; no interrupt output
++	 * is enabled toward the GIC, regardless of the bootloader's IRQ mask. */
++	wr(GENI_M_IRQ_EN, 0x7fc0007f);
 +
 +	/* mode 0, chip select 0, 8 bits, most significant first, four bytes in a FIFO word */
 +	wr(SPI_LOOPBACK, 0);
@@ -650,8 +462,11 @@ index 0000000..b033b90
 +	wr(SPI_WORD_LEN, 8 - 4);
 +
 +	divider = (se_source_hz + hz - 1) / hz;
++	if (!divider || divider > 0xfff) return "the SPI divider is outside the GENI clock range";
 +	wr(GENI_CLK_SEL, se_clock_select & 7);
-+	wr(GENI_SER_M_CLK_CFG, (divider ? divider : 1) << 4 | 1);
++	wr(GENI_SER_M_CLK_CFG, divider << 4 | 1);
++	printf("Pong touch: GENI clock=%#x source=%u SPI<=%u Hz, IRQ outputs off\n",
++	    rd(GENI_SER_M_CLK_CFG), se_source_hz, hz);
 +	return NULL;
 +}
 +
@@ -665,7 +480,7 @@ index 0000000..b033b90
 +		uint32_t valid = status >> 28 & 7;
 +
 +		if (valid && valid < 4) {
-+			bytes -= 4 - valid;
++			if (words) bytes -= 4 - valid;
 +		}
 +	}
 +	for (uint32_t i = 0; i < words; i++) {
@@ -682,23 +497,22 @@ index 0000000..b033b90
 +	}
 +}
 +
-+static void
++static bool
 +geni_recover(void)
 +{
-+	wr(GENI_M_CMD_CTRL, 1u << 2);
-+	for (int i = 0; i < 2000 && !(rd(GENI_M_IRQ_STATUS) & M_CMD_CANCEL); i++) {
-+		sleep_us(100);
-+	}
-+	if (!(rd(GENI_M_IRQ_STATUS) & M_CMD_CANCEL)) {
-+		wr(GENI_M_CMD_CTRL, 1u << 1);
-+		for (int i = 0; i < 2000 && !(rd(GENI_M_IRQ_STATUS) & M_CMD_ABORT); i++) {
-+			sleep_us(100);
-+		}
-+	}
-+	for (int i = 0; i < 64 && (rd(GENI_RX_FIFO_STATUS) & 0x01ffffff); i++) {
-+		(void)rd(GENI_RX_FIFO);
-+	}
-+	wr(GENI_M_IRQ_CLEAR, 0xffffffff);
++    wr(GENI_M_CMD_CTRL, 1u << 2);
++    for (unsigned i = 0; i < 2000 && !(rd(GENI_M_IRQ_STATUS) & (M_CMD_CANCEL | M_CMD_DONE)); i++) sleep_us(100);
++    if (!(rd(GENI_M_IRQ_STATUS) & (M_CMD_CANCEL | M_CMD_DONE))) {
++        wr(GENI_M_CMD_CTRL, 1u << 1);
++        for (unsigned i = 0; i < 2000 && !(rd(GENI_M_IRQ_STATUS) & (M_CMD_ABORT | M_CMD_DONE)); i++) sleep_us(100);
++    }
++    bool idle = !(rd(GENI_STATUS) & 1);
++    if (idle) {
++        for (uint32_t i = 0; i < fifo_depth && (rd(GENI_RX_FIFO_STATUS) & 0x01ffffff); i++) (void)rd(GENI_RX_FIFO);
++    }
++    wr(GENI_M_IRQ_CLEAR, 0xffffffff);
++    if (!idle) printf("Pong touch: GENI cancel/abort did not stop the active command\n");
++    return idle;
 +}
 +
 +/* One transfer with the chip selected throughout: `length` bytes out (zeros without tx) and as many in. */
@@ -709,39 +523,22 @@ index 0000000..b033b90
 +	uint32_t sent = 0, received = 0, status = 0;
 +	uint64_t deadline;
 +
-+	for (int i = 0; rd(GENI_STATUS) & 1; i++) {
-+		if (i > 2000) {
-+			geni_recover();
-+			break;
-+		}
-+		sleep_us(100);
-+	}
++	if (!length || length > 1032) return false;
++	for (unsigned i = 0; i < 2000 && (rd(GENI_STATUS) & 1); i++) sleep_us(100);
++	if ((rd(GENI_STATUS) & 1) && !geni_recover()) return false;
 +	wr(GENI_M_IRQ_CLEAR, 0xffffffff);
-+	/* K60_GENI_DIAG: what does the engine look like before the command? */
-+	printf("Pong touch: GENI pre status=%#x clk_cfg=%#x trans_cfg=%#x word_len=%#x\n",
-+	    rd(GENI_STATUS), rd(GENI_SER_M_CLK_CFG), rd(SPI_TRANS_CFG), rd(SPI_WORD_LEN));
-+	/* K60_CLK_PROOF: is the SE's SPI branch clock really running, and did the
-+	 * RCG divider take? clk_cfg reads back 0x51, so the register accepted the
-+	 * write; this tells us whether the GCC side agrees. */
-+	{
-+		uint32_t se4 = rd(GCC_QUP0_SE4_CBCR);
-+		uint32_t cfg = rd(GCC_QUP0_SE4_CFG);
-+		uint32_t cmd = rd(GCC_QUP0_SE4_CMD);
-+		printf("Pong touch: CLKPROOF se4_cbcr=%#x off=%u on=%u hwcg=%u\n",
-+		    se4, (se4 >> 31) & 1, (se4 >> 30) & 1, (se4 >> 1) & 1);
-+		printf("Pong touch: CLKPROOF se4_cfg=%#x cmd=%#x dfsr=%#x\n",
-+		    cfg, cmd, rd(GCC_QUP0_SE4_DFSR));
-+	}
 +	wr(SPI_TX_TRANS_LEN, length);
 +	wr(SPI_RX_TRANS_LEN, length);
-+	printf("Pong touch: GENI lens tx=%#x rx=%#x\n",
-+	    rd(SPI_TX_TRANS_LEN), rd(SPI_RX_TRANS_LEN));
 +	wr(GENI_M_CMD0, SPI_FULL_DUPLEX);
-+	printf("Pong touch: GENI cmd0 readback=%#x status=%#x\n",
-+	    rd(GENI_M_CMD0), rd(GENI_STATUS));
 +	clock_interval_to_deadline(200, NSEC_PER_MSEC, &deadline);
 +	while (mach_absolute_time() < deadline) {
-+		while (sent < length && (rd(GENI_TX_FIFO_STATUS) & 0x0fffffff) + 1 < fifo_depth) {
++		uint32_t queued = rd(GENI_TX_FIFO_STATUS) & 0x0fffffff;
++		if (queued > fifo_depth) break;
++		/* Reserve one word as in the existing FIFO path; bound every inner
++		 * refill even if a hardware status register stops changing. */
++		uint32_t available = fifo_depth - queued;
++		while (sent < length && available > 1) {
++			available--;
 +			uint32_t word = 0;
 +
 +			for (int j = 0; j < 4 && sent < length; j++, sent++) {
@@ -750,18 +547,6 @@ index 0000000..b033b90
 +			wr(GENI_TX_FIFO, word);
 +		}
 +		status = rd(GENI_M_IRQ_STATUS);
-+		/* K60_XFER_TRACE: the command is accepted (cmd0 reads back) but
-+		 * M_CMD_DONE never appears and the RX FIFO stays empty. Print the
-+		 * engine state for the first few iterations only. */
-+		{
-+			static unsigned trace;
-+			if (trace < 8) {
-+				printf("Pong touch: XFER[%u] irq=%#x gst=%#x txf=%#x rxf=%#x sent=%u rcv=%u\n",
-+				    trace, status, rd(GENI_STATUS), rd(GENI_TX_FIFO_STATUS),
-+				    rd(GENI_RX_FIFO_STATUS), sent, received);
-+				trace++;
-+			}
-+		}
 +		geni_drain(rx, length, &received);
 +		if (status & M_ERRORS) {
 +			break;
@@ -769,7 +554,7 @@ index 0000000..b033b90
 +		if (status & M_CMD_DONE) {
 +			geni_drain(rx, length, &received);
 +			wr(GENI_M_IRQ_CLEAR, status);
-+			if (received == length) {
++			if (sent == length && received == length) {
 +				return true;
 +			}
 +			break;
@@ -779,49 +564,52 @@ index 0000000..b033b90
 +		printf("goodix: SPI transfer of %u bytes failed: status %#x, sent %u, received %u\n", length, status, sent,
 +		    received);
 +	}
-+	geni_recover();
++	(void)geni_recover();
 +	return false;
 +}
 +
 +/* ---- SPI by hand, on the same pins ----------------------------------------------------------------- */
 +
-+static unsigned bitbang_in, bitbang_out;
-+
-+/* K60_PIN_PERMUTE: bitbang roles as variables so the probe can try all 24 assignments. */
-+static unsigned bitbang_clk, bitbang_cs;
-+
-+static void
++static bool
 +bitbang_init(void)
 +{
-+	if (!bitbang_clk) bitbang_clk = PIN_CLK;
-+	if (!bitbang_cs) bitbang_cs = PIN_CS;
-+	gpio_output(bitbang_cs, true, PULL_NONE, 6);
-+	gpio_output(bitbang_clk, false, PULL_NONE, 6);
-+	gpio_output(bitbang_out, false, PULL_NONE, 6);
-+	gpio_configure(bitbang_in, 0, PULL_NONE, 2, false);
++    if (!bitbang_wiring) {
++        printf("Pong touch: GPIO SPI unavailable: qup4 pin roles not established in bitbang-pins; no pads driven\n");
++        return false;
++    }
++    gpio_output(PIN_CS, true, PULL_UP, 6);
++    gpio_configure(PIN_MISO, 0, PULL_NONE, 6, false);
++    gpio_output(PIN_CLK, false, PULL_NONE, 6);
++    gpio_output(PIN_MOSI, false, PULL_NONE, 6);
++    return true;
 +}
 +
 +static bool
 +bitbang_transfer(const uint8_t *tx, uint8_t *rx, uint32_t length)
 +{
-+	if (!bitbang_clk) bitbang_clk = PIN_CLK;
-+	if (!bitbang_cs) bitbang_cs = PIN_CS;
-+	gpio_set(bitbang_cs, false);
-+	for (uint32_t i = 0; i < length; i++) {
-+		uint8_t out = tx ? tx[i] : 0, in = 0;
-+
-+		for (int bit = 7; bit >= 0; bit--) {
-+			gpio_set(bitbang_out, out >> bit & 1);
-+			gpio_set(bitbang_clk, true);
-+			in = (uint8_t)(in << 1 | gpio_get(bitbang_in));
-+			gpio_set(bitbang_clk, false);
-+		}
-+		if (rx) {
-+			rx[i] = in;
-+		}
-+	}
-+	gpio_set(bitbang_cs, true);
-+	return true;
++    if (!length || length > 1032) return false;
++    /* Mode 0, MSB first, with CS held for the entire Berlin frame. The
++     * explicit half-cycle delays bound GPIO SPI to at most 500 kHz. */
++    gpio_set(PIN_CS, false);
++    sleep_us(1);
++    for (uint32_t i = 0; i < length; i++) {
++        uint8_t out = tx ? tx[i] : 0, in = 0;
++        for (int bit = 7; bit >= 0; bit--) {
++            gpio_set(PIN_MOSI, (out >> bit) & 1);
++            sleep_us(1);
++            gpio_set(PIN_CLK, true);
++            sleep_us(1);
++            in = (uint8_t)(in << 1 | gpio_get(PIN_MISO));
++            gpio_set(PIN_CLK, false);
++        }
++        if (rx) rx[i] = in;
++        /* A maximum-size ID/description read must not busy-spin for the
++         * whole transfer. CS stays asserted while this thread yields. */
++        if (i && (i & 63u) == 63u) sleep_ms(1);
++    }
++    sleep_us(1);
++    gpio_set(PIN_CS, true);
++    return true;   /* clocks ran, not a chip ACK: probe/checksum is required */
 +}
 +
 +static bool (*spi_transfer)(const uint8_t *tx, uint8_t *rx, uint32_t length);
@@ -874,21 +662,25 @@ index 0000000..b033b90
 +	return spi_transfer(spi_tx, NULL, 5 + length);
 +}
 +
-+/* The chip's blocks end in the 16-bit sum of their bytes; all zeros or all ones is no answer at all. */
++/* Berlin blocks end in the little-endian 16-bit sum of all preceding bytes.
++ * Dummy-line detection belongs to identification, not contact checksums:
++ * a valid ID0 finger at (0,0) or a zero-contact release can contain zeros. */
 +static bool
 +goodix_checksum_ok(const uint8_t *data, uint32_t length)
 +{
-+	uint32_t sum = 0;
-+	bool blank = true;
++    uint32_t sum = 0;
++    if (length < 2) return false;
++    for (uint32_t i = 0; i < length - 2; i++) sum += data[i];
++    return (uint16_t)sum == (uint16_t)(data[length - 2] | data[length - 1] << 8);
++}
 +
-+	if (length < 2) {
-+		return false;
-+	}
-+	for (uint32_t i = 0; i < length - 2; i++) {
-+		sum += data[i];
-+		blank &= data[i] == 0 || data[i] == 0xff;
-+	}
-+	return !blank && (uint16_t)sum == (uint16_t)(data[length - 2] | data[length - 1] << 8);
++static bool
++goodix_dummy_data(const uint8_t *data, uint32_t length)
++{
++    for (uint32_t i = 0; i < length; i++) {
++        if (data[i] != 0 && data[i] != 0xff) return false;
++    }
++    return true;
 +}
 +
 +static uint16_t
@@ -916,367 +708,352 @@ index 0000000..b033b90
 +static bool
 +goodix_probe(bool verbose)
 +{
-+	static uint8_t info[GOODIX_MAX_READ];
-+	uint8_t version[28];
-+	uint32_t length, offset;
++    static uint8_t info[GOODIX_MAX_READ];
++    uint8_t version[28];
++    uint32_t length, offset;
++    touch_address = command_address = 0;
 +
-+	if (!goodix_read(GOODIX_FW_VERSION, version, sizeof(version))) {
-+		return false;
-+	}
-+	if (!goodix_checksum_ok(version, sizeof(version))) {
-+		if (verbose) {
-+			printf("goodix: no valid firmware version: %02x %02x %02x %02x %02x %02x %02x %02x ... %02x %02x\n",
-+			    version[0], version[1], version[2], version[3], version[4], version[5], version[6], version[7],
-+			    version[26], version[27]);
-+		}
-+		return false;
-+	}
-+	printf("goodix: chip \"%.6s\", firmware \"%.8s\" %02x.%02x.%02x.%02x, sensor %u\n", (const char *)version,
-+	    (const char *)version + 10, version[18], version[19], version[20], version[21], version[23]);
++    if (!goodix_read(GOODIX_FW_VERSION, version, sizeof(version))) {
++        printf("goodix: firmware-version SPI transfer failed at %#x\n", GOODIX_FW_VERSION);
++        return false;
++    }
++    if (goodix_dummy_data(version, sizeof(version))) {
++        printf("goodix: firmware-version contains only bus default bytes, no chip response\n");
++        return false;
++    }
++    if (!goodix_checksum_ok(version, sizeof(version))) {
++        printf("goodix: firmware-version checksum invalid (tail %02x %02x)\n", version[26], version[27]);
++        return false;
++    }
++    if (verbose) printf("goodix: chip \"%.6s\", firmware \"%.8s\" %02x.%02x.%02x.%02x, sensor %u\n",
++        (const char *)version, (const char *)version + 10, version[18], version[19], version[20], version[21], version[23]);
 +
-+	if (!goodix_read(GOODIX_IC_INFO, info, 2)) {
-+		return false;
-+	}
-+	length = le16(info);
-+	if (length < 40 || length >= GOODIX_MAX_READ || !goodix_read(GOODIX_IC_INFO, info, length) ||
-+	    !goodix_checksum_ok(info, length)) {
-+		printf("goodix: bad chip description (length %u)\n", length);
-+		return false;
-+	}
-+	/* the length, the version (16 bytes), the features (10), four counts, then five lists of 16-bit numbers */
-+	offset = 2 + 16 + 10 + 4;
-+	for (int i = 0; i < 5; i++) {
-+		if (offset >= length) {
-+			return false;
-+		}
-+		offset += 1 + 2u * info[offset];
-+	}
-+	if (offset + 48 + 2 > length) {
-+		printf("goodix: chip description too short (%u, lists end at %u)\n", length, offset);
-+		return false;
-+	}
-+	touch_address = le32(info + offset + 44);
-+	command_address = le32(info + offset + 0);      /* (the "misc" part: the command buffer comes first) */
-+    /* Pong vendor misc ABI: +48 header, +50 point size, +52/+54 real axes. */
-+    if (offset+56+2 > length || le16(info+offset+48)!=8 || le16(info+offset+50)!=8) return false;
-+    uint16_t x=le16(info+offset+52), y=le16(info+offset+54);
-+    if (x && y) { max_x=x;max_y=y; }
-+	printf("goodix: touch report at %#x, coordinates up to %u x %u\n", touch_address, max_x, max_y);
-+	return touch_address != 0;
++    if (!goodix_read(GOODIX_IC_INFO, info, 2)) {
++        printf("goodix: IC-info length transfer failed\n");
++        return false;
++    }
++    length = le16(info);
++    if (length < 2 + 16 + 10 + 4 + 5 + 52 + 2 || length >= GOODIX_MAX_READ) {
++        printf("goodix: IC-info length %u is outside the Berlin description bounds\n", length);
++        return false;
++    }
++    if (!goodix_read(GOODIX_IC_INFO, info, length)) {
++        printf("goodix: IC-info transfer failed (%u bytes)\n", length);
++        return false;
++    }
++    if (le16(info) != length || goodix_dummy_data(info, length) || !goodix_checksum_ok(info, length)) {
++        printf("goodix: IC-info length/dummy/checksum validation failed (%u bytes)\n", length);
++        return false;
++    }
++    /* Linux Berlin ABI: length + version(16) + features(10) + four counts,
++     * then active-scan/mutual/self-TX/self-RX/stylus u16 frequency lists. */
++    uint32_t end = length - 2;  /* exclude the checksum from every bounds test */
++    offset = 2 + 16 + 10 + 4;
++    for (unsigned i = 0; i < 5; i++) {
++        if (offset >= end) {
++            printf("goodix: IC-info list %u has no count\n", i);
++            return false;
++        }
++        uint32_t bytes = 2u * info[offset++];
++        if (bytes > end - offset) {
++            printf("goodix: IC-info list %u overruns description\n", i);
++            return false;
++        }
++        offset += bytes;
++    }
++    if (offset > end || end - offset < 52) {
++        printf("goodix: IC-info misc is truncated (length %u, offset %u)\n", length, offset);
++        return false;
++    }
++    uint32_t address = le32(info + offset + 44), command = le32(info + offset);
++    uint16_t head = le16(info + offset + 48), point = le16(info + offset + 50);
++    if (!address || address > 0xffffffffu - (8 + 8 * GOODIX_MAX_TOUCHES + 2) || head != 8 || point != 8) {
++        printf("goodix: unsupported report ABI address=%#x head=%u point=%u\n", address, head, point);
++        return false;
++    }
++    /* misc+52/+54 are reserved1/reserved2 in the Berlin wire ABI, NOT axes.
++     * K60's raw limits remain the validated ADT 14400x32000. */
++    touch_address = address;
++    command_address = command;
++    if (verbose) printf("goodix: IC-info length=%u misc=%u touch=%#x command=%#x head=%u point=%u raw axes=%ux%u\n",
++        length, offset, touch_address, command_address, head, point, max_x, max_y);
++    return true;
 +}
 +
-+/* What has been seen so far: said once a minute, so that the end of the log always tells. */
-+static struct {
-+	uint32_t polls, reports, touches, bad, last_x, last_y;
-+} seen;
 +
 +/* Which fingers were down in the last report, and where. */
 +static struct {
 +	bool down, seen;
 +	uint32_t x, y;
 +} contact[GOODIX_MAX_TOUCHES];
-+static uint32_t flip;           /* boot-arg touch_flip: 1 = mirror left-right, 2 = mirror top-bottom */
++
++static bool
++goodix_contacts_valid(const uint8_t *touches, uint32_t count)
++{
++    uint32_t ids = 0;
++    for (uint32_t i = 0; i < count; i++) {
++        const uint8_t *t = touches + 8 * i;
++        uint32_t id = t[0] >> 4, kind = t[0] & 0xf;
++        if (kind == 1 || kind == 3) continue;  /* Berlin stylus/hover, not a finger */
++        if (id >= GOODIX_MAX_TOUCHES || (ids & (1u << id))) return false;
++        ids |= 1u << id;
++    }
++    return true;
++}
++
++static void
++goodix_release(void)
++{
++    for (uint32_t id = 0; id < GOODIX_MAX_TOUCHES; id++) {
++        if (!contact[id].down) continue;
++        contact[id].down = false;
++        pong_touch_post(PONG_TOUCH_UP, id, contact[id].x, contact[id].y);
++    }
++}
 +
 +static void
 +goodix_report(const uint8_t *touches, uint32_t count)
 +{
-+	static unsigned shown;
-+
-+	for (int i = 0; i < GOODIX_MAX_TOUCHES; i++) {
-+		contact[i].seen = false;
-+	}
-+	for (uint32_t i = 0; i < count; i++) {
-+		const uint8_t *t = touches + 8 * i;
-+		uint32_t id = t[0] >> 4, kind = t[0] & 0xf;
-+		uint32_t x = le16(t + 2), y = le16(t + 4);
-+
-+		if (id >= GOODIX_MAX_TOUCHES || kind == 1 || kind == 3) {       /* 1 and 3: a stylus */
-+			continue;
-+		}
-+		if (shown < 4) {
-+			shown++;
-+			printf("goodix: finger %u at %u, %u (of %u x %u)\n", id, x, y, max_x, max_y);
-+		}
-+		seen.touches++;
-+		seen.last_x = x;
-+		seen.last_y = y;
-+		x = x >= max_x ? 65535 : x * 65535 / max_x;
-+		y = y >= max_y ? 65535 : y * 65535 / max_y;
-+		if (flip & 1) {
-+			x = 65535 - x;
-+		}
-+		if (flip & 2) {
-+			y = 65535 - y;
-+		}
-+		contact[id].seen = true;
-+		if (!contact[id].down) {
-+			pong_touch_post(PONG_TOUCH_DOWN, id, x, y);
-+		} else if (contact[id].x != x || contact[id].y != y) {
-+			pong_touch_post(PONG_TOUCH_MOVE, id, x, y);
-+		}
-+		contact[id].down = true;
-+		contact[id].x = x;
-+		contact[id].y = y;
-+	}
-+	/* a finger that is no longer in the report has lifted */
-+	for (uint32_t id = 0; id < GOODIX_MAX_TOUCHES; id++) {
-+		if (contact[id].down && !contact[id].seen) {
-+			contact[id].down = false;
-+			pong_touch_post(PONG_TOUCH_UP, id, contact[id].x, contact[id].y);
-+		}
-+	}
++    static unsigned shown;
++    for (unsigned id = 0; id < GOODIX_MAX_TOUCHES; id++) contact[id].seen = false;
++    for (uint32_t i = 0; i < count; i++) {
++        const uint8_t *t = touches + 8 * i;
++        uint32_t id = t[0] >> 4, kind = t[0] & 0xf;
++        if (kind == 1 || kind == 3) continue;
++        uint32_t raw_x = le16(t + 2), raw_y = le16(t + 4);
++        /* The ADT contains raw axes, not panel pixels. This is the only
++         * raw-axis conversion; userland merely decodes the fixed u16 ABI. */
++        uint32_t x = raw_x >= max_x ? 65535u : raw_x * 65535u / max_x;
++        uint32_t y = raw_y >= max_y ? 65535u : raw_y * 65535u / max_y;
++        if (flip & 1) x = 65535u - x;
++        if (flip & 2) y = 65535u - y;
++        uint32_t type = contact[id].down ? PONG_TOUCH_MOVE : PONG_TOUCH_DOWN;
++        if (!contact[id].down || contact[id].x != x || contact[id].y != y) {
++            pong_touch_post(type, id, x, y);
++            if (shown++ < 8) printf("goodix: type=%u finger=%u raw=%u,%u normalized=%u,%u\n",
++                type, id, raw_x, raw_y, x, y);
++        }
++        contact[id].seen = contact[id].down = true;
++        contact[id].x = x;
++        contact[id].y = y;
++    }
++    /* Goodix IDs are stable hardware slots; omitted slots are real releases. */
++    for (uint32_t id = 0; id < GOODIX_MAX_TOUCHES; id++) {
++        if (contact[id].down && !contact[id].seen) {
++            contact[id].down = false;
++            pong_touch_post(PONG_TOUCH_UP, id, contact[id].x, contact[id].y);
++        }
++    }
 +}
 +
-+/* Read the report if there is one, and tell the chip it has been read. */
-+static void
++/* Read a real Berlin frame, publish only validated contacts, then clear its
++ * status through the physical SPI transport. A failed ACK is not success. */
++static bool
 +goodix_poll(void)
 +{
-+	static uint8_t report[8 + 8 * GOODIX_MAX_TOUCHES + 2];
-+	static unsigned bad;
-+	const uint8_t zero = 0;
-+	const uint32_t first = 8 + 8 * 2 + 2;           /* the header and two fingers: all there is, most of the time */
-+	uint32_t count;
++    static uint8_t report[8 + 8 * GOODIX_MAX_TOUCHES + 2];
++    static unsigned complaints;
++    const uint8_t zero = 0;
++    const uint32_t first = 8 + 8 * 2 + 2;
++    bool valid = true, reset = false;
++    uint32_t count = 0;
 +
-+	seen.polls++;
-+	if (!goodix_read(touch_address, report, first) || report[0] == 0) {
-+		return;
-+	}
-+	seen.reports++;
-+	count = report[2] & 0xf;
-+	if ((report[0] & GOODIX_STATUS_TOUCH) && count > 2 && count <= GOODIX_MAX_TOUCHES &&
-+	    !goodix_read(touch_address + 8, report + 8, 8 * count + 2)) {
-+		return;
-+	}
-+	goodix_write(touch_address, &zero, 1);
-+	if (!goodix_checksum_ok(report, 8)) {
-+		seen.bad++;
-+		if (bad++ < 8) {
-+			printf("goodix: bad report header: %02x %02x %02x %02x %02x %02x %02x %02x\n", report[0], report[1],
-+			    report[2], report[3], report[4], report[5], report[6], report[7]);
-+		}
-+		return;
-+	}
-+	if (report[0] & GOODIX_STATUS_REQUEST) {
-+		if ((report[2] & 0xf) == GOODIX_REQUEST_RESET || report[2] == GOODIX_REQUEST_RESET) {
-+			printf("goodix: the chip asks to be reset\n");
-+			touch_reset();
-+		}
-+		return;
-+	}
-+	if (!(report[0] & GOODIX_STATUS_TOUCH)) {
-+		return;
-+	}
-+	if (count > GOODIX_MAX_TOUCHES || (count && !goodix_checksum_ok(report + 8, count * 8 + 2))) {
-+		seen.bad++;
-+		if (bad++ < 8) {
-+			printf("goodix: bad report (%u touches)\n", count);
-+		}
-+		return;
-+	}
-+	goodix_report(report + 8, count);
++    if (!touch_address) return false; /* failed re-identification must not read address zero */
++    if (!goodix_read(touch_address, report, first)) return false;
++    if (!report[0]) return true;  /* no event does NOT mean all contacts lifted */
++    if (!goodix_checksum_ok(report, 8)) {
++        if (complaints++ < 8) printf("goodix: invalid report header checksum\n");
++        valid = false;
++    } else {
++        if (report[0] & GOODIX_STATUS_TOUCH) {
++            count = report[2] & 0xf;
++            if (count > GOODIX_MAX_TOUCHES) {
++                valid = false;
++            } else if (count > 2 && !goodix_read(touch_address + first, report + first, 8 * (count - 2))) {
++                /* Linux Berlin continuation starts after the already-read
++                 * 26 bytes, including the first two bytes of contact 3. */
++                valid = false;
++            }
++            if (valid && count && !goodix_checksum_ok(report + 8, 8 * count + 2)) valid = false;
++            if (valid && !goodix_contacts_valid(report + 8, count)) valid = false;
++        }
++        if (report[0] & GOODIX_STATUS_REQUEST) reset = report[2] == GOODIX_REQUEST_RESET;
++    }
++    if (!goodix_write(touch_address, &zero, 1)) {
++        if (complaints++ < 8) printf("goodix: report status clear failed\n");
++        return false;
++    }
++    if (!valid) {
++        if (complaints++ < 8) printf("goodix: invalid contact report (%u contacts)\n", count);
++        return false;
++    }
++    if (reset) {
++        /* Reset ends all previous physical contacts. Re-identify the ABI
++         * before another read; never preserve stuck HID fingers across reset. */
++        goodix_release();
++        touch_reset();
++        if (!goodix_probe(true)) return false;
++        return goodix_write(touch_address, &zero, 1);
++    }
++    if (report[0] & GOODIX_STATUS_TOUCH) goodix_report(report + 8, count);
++    return true;
 +}
 +
 +
-+/* No firmware upload, FocalTech strap scan, GPU or other Redwood subsystem. */
++/* Existing Pong transport, K60 resources and no firmware upload. */
 +static bool
 +bring_up(void)
 +{
-+    printf("Pong touch: DIAG bring_up entry stage=%u\n", touch_stage);
-+    /* K60_S7_SKIP_GENI: stage 7 exists to exercise the bitbang fallback only.
-+     * Skip the whole GENI block (clocks_on, engine init, 200 ms failing
-+     * transfer) so the pins go straight to GPIO mode and no engine register is
-+     * ever touched. */
-+    if (touch_stage >= 7) {
-+        printf("Pong touch: DIAG stage7 skips GENI, straight to bitbang\n");
-+        goto bitbang_only;
-+    }
-+    gpio_output(PIN_RESET,true,PULL_UP,6);
-+    gpio_configure(PIN_INT,0,PULL_UP,6,false);
-+    printf("Pong touch: DIAG reset/irq pins done\n");
-+    if (touch_stage < 3) {
-+        printf("Pong touch: DIAG stop after GPIO (stage 2)\n");
-+        return false;
-+    }
-+    if (clocks_on()) {
-+        /* K60_PINORDER: sheng (TouchProbe.cpp:422-425) configures the four SPI
-+         * pins BEFORE touching the engine. Doing it after geni_spi_init leaves
-+         * the QUP mux pointing at the wrong function during engine setup. */
-+        gpio_configure(PIN_MISO,1,PULL_NONE,6,false);
-+        gpio_configure(PIN_MOSI,1,PULL_NONE,6,false);
-+        gpio_configure(PIN_CLK,1,PULL_NONE,6,false);
-+        gpio_configure(PIN_CS,1,PULL_NONE,6,false);
-+        printf("Pong touch: DIAG spi pins muxed to qup4\n");
-+        if (touch_stage < 5) {
-+            printf("Pong touch: DIAG stop before the engine window (0x%llx)\n", se_phys);
++    if (touch_stage == 7) {
++        printf("Pong touch: GPIO-only identification, no GCC or serial-engine accesses\n");
++        if (!bitbang_init()) return false;
++        spi_transfer = bitbang_transfer;
++    } else {
++        printf("Pong touch: mapping serial engine %#llx after clock checks\n", se_phys);
++        se = ml_io_map(SE_PHYS, SE_SIZE);
++        if (!se) {
++            printf("Pong touch: serial-engine mapping unavailable\n");
 +            return false;
 +        }
-+        printf("Pong touch: touching serial engine %#llx now\n",se_phys);
-+        const char *problem=geni_spi_init(4000000);
-+        if (!problem) {
-+            spi_transfer=geni_transfer;
-+            if (goodix_probe(false)) return true;
-+            if (touch_stage < 6) {
-+                printf("Pong touch: DIAG stop before RPMh (stage 5)\n");
-+                return false;
-+            }
-+            /* K60_STAGE7_ONLY: only stage 6 exercises the RPMh path. Stage 7
-+             * is bitbang-only and must never call io_supply_on(): it writes
-+             * TCS(rsc+0xd00+...) and rsc is 0 by HR-01 -> data abort. */
-+            if (touch_stage == 6 && io_supply_on()) { touch_reset();if (goodix_probe(true)) return true; }
-+        } else printf("Pong touch: GENI unavailable: %s; use GPIO SPI\n",problem);
++        bool gpio_spi;
++        const char *problem = geni_spi_init(spi_hz, &gpio_spi);
++        if (gpio_spi) {
++            printf("Pong touch: %s; use real GPIO SPI, not forced FIFO or guessed DMA\n", problem);
++            if (!bitbang_init()) return false;
++            spi_transfer = bitbang_transfer;
++        } else if (problem) {
++            printf("Pong touch: GENI unavailable: %s\n", problem);
++            return false;
++        } else {
++            spi_transfer = geni_transfer;
++        }
 +    }
-+    if (touch_stage < 7) {
-+        printf("Pong touch: DIAG stop before bitbang (stage %u)\n", touch_stage);
++    if (!goodix_probe(true)) {
++        printf("Pong touch: identification failed; retained IOVDD is unverified, no /dev/pong-touch\n");
 +        return false;
 +    }
-+    /* K60_BITBANG_ONLY: stage 7 skips GENI completely. io_supply_on() is NOT
-+     * called here on purpose: it writes TCS(rsc+0xd00+...) and rsc is 0 by
-+     * HR-01, so any call would take a data abort. The chip may already be
-+     * powered by ABL; if not, the probe simply reads zeroes and fails safely. */
-+bitbang_only:
-+    printf("Pong touch: DIAG bitbang-only path (stage %u)\n", touch_stage);
-+    gpio_output(PIN_RESET,true,PULL_UP,6);
-+    gpio_configure(PIN_INT,0,PULL_UP,6,false);
-+    /* K60_PIN_PERMUTE_BLOCK: the FDT fixes the pin SET (gpio16..19, function
-+     * qup4) but not which is MISO/MOSI/CLK/CS. Try all 24 assignments and print
-+     * the first four bytes each returns; the live chip answers on exactly one. */
-+    /* K60_MISO17: the 24-way sweep showed MISO is GPIO 17 (only assignments
-+     * with miso=17 returned 0xff instead of 0x00). Pulse RESET, then probe the
-+     * six remaining MOSI/CLK/CS assignments over {16,18,19}. */
-+    /* K60_AVDD71: FDT goodix,avdd-gpio = <&tlmm 0x47 0> = GPIO 71. A load
-+     * switch enable, so drive it high and give the rail time to settle. */
-+    printf("Pong touch: AVDD gpio71 on, int_before=%u\n", gpio_get(PIN_INT));
-+    gpio_output(71u, true, PULL_NONE, 6);
-+    sleep_ms(10);
-+    printf("Pong touch: AVDD gpio71 done int_after=%u\n", gpio_get(PIN_INT));
-+    printf("Pong touch: RESETPULSE low 20ms then high 120ms\n");
-+    gpio_output(PIN_RESET, false, PULL_NONE, 6);
-+    sleep_ms(20);
-+    gpio_output(PIN_RESET, true, PULL_UP, 6);
-+    sleep_ms(120);
-+    printf("Pong touch: RESETPULSE done int_pin=%u\n", gpio_get(PIN_INT));
-+    {
-+        static const unsigned rest[3] = {16u, 18u, 19u};
-+        static const uint8_t zero[4] = {0, 0, 0, 0};
-+        unsigned n = 0;
-+        for (unsigned b = 0; b < 3; b++)
-+        for (unsigned c = 0; c < 3; c++) {
-+            if (c == b) continue;
-+            for (unsigned d = 0; d < 3; d++) {
-+                uint8_t probe[4] = {0, 0, 0, 0};
-+                if (d == b || d == c) continue;
-+                bitbang_in = 17u;
-+                bitbang_out = rest[b];
-+                bitbang_clk = rest[c];
-+                bitbang_cs = rest[d];
-+                bitbang_init();
-+                bitbang_transfer(zero, probe, 4);
-+                printf("Pong touch: M17[%u] miso=17 mosi=%u clk=%u cs=%u b=%02x %02x %02x %02x\n",
-+                    n, rest[b], rest[c], rest[d], probe[0], probe[1], probe[2], probe[3]);
-+                n++;
-+            }
-+        }
-+        bitbang_clk = PIN_CLK;
-+        bitbang_cs = PIN_CS;
-+    }
-+    /* Only the two known data pins can exchange direction; no arbitrary scan. */
-+    spi_transfer=bitbang_transfer;
-+    /* K60_BB_DIAG: PIN_INT is a pull-up input. A powered controller drives it
-+     * low after reset; a floating (unpowered) chip leaves it high. This is the
-+     * cheapest way to tell "no reply because unpowered" from "wrong SPI mode". */
-+    printf("Pong touch: BBDIAG int_pin=%u reset_pin=%u pins=%u,%u,%u,%u\n",
-+        gpio_get(PIN_INT), 1u, pins[0], pins[1], pins[2], pins[3]);
-+    for (unsigned attempt=0;attempt<2;attempt++) {
-+        bitbang_in=pins[attempt];bitbang_out=pins[1-attempt];bitbang_init();
-+        printf("Pong touch: BBDIAG attempt=%u in=%u out=%u\n", attempt, bitbang_in, bitbang_out);
-+        if (goodix_probe(true)) return true;
-+        if (attempt==0 && touch_stage == 6 && io_supply_on()) {touch_reset();if (goodix_probe(true)) return true;}
-+    }
-+    return false;
++    return true;
 +}
 +
 +static void
 +touch_thread(__unused void *parameter, __unused wait_result_t result)
 +{
-+    printf("Pong touch: DIAG thread entered stage=%u\n", touch_stage);
-+    /* K60_STAGE0: with stage 0 there is nothing to do at all. Returning here
-+     * separates "the thread itself is the problem" from "any map or GPIO is". */
-+    if (touch_stage == 0) {
-+        printf("Pong touch: DIAG stage0 thread alive, returning\n");
-+        thread_terminate(current_thread());
-+        return;
++    printf("Pong touch: deferred stage=%u delay=%u ms SPI<=%u Hz\n", touch_stage, touch_delay_ms, spi_hz);
++    sleep_ms(touch_delay_ms);
++    if (!pins_map()) {
++        printf("Pong touch: TLMM mapping unavailable; normal UI boot continues\n");
++        goto out;
 +    }
-+    /* base the tiny TLMM window on gpio_offset (0x100000), not on TLMM_PHYS */
-+    tlmm=ml_io_map(TLMM_PHYS+gpio_offset,TLMM_SIZE)-gpio_offset;
-+    gcc=ml_io_map(GCC_PHYS,GCC_SIZE);
-+    printf("Pong touch: DIAG mapped tlmm=%#llx gcc=%#llx\n",
-+        (unsigned long long)tlmm, (unsigned long long)gcc);
-+    /* K60_NO_RSC: 0x17a20000 is the RSC "DRV 2" window. The project's own
-+     * research (docs/research/touch/05-plan.md:9, findings 0246/0248) records
-+     * that the FIRST read of its TCS kills the whole device. Do not map it.
-+     * cmd_db is plain memory and stays mapped; rsc stays NULL on purpose. */
-+    rsc = 0;
-+    se=ml_io_map(SE_PHYS,SE_SIZE);
-+    cmd_db=ml_io_map_wcomb(CMD_DB_PHYS,CMD_DB_SIZE);
-+    printf("Pong touch: DIAG mapped se=%#llx rsc=%#llx cmd_db=%#llx\n",
-+        (unsigned long long)se, (unsigned long long)rsc, (unsigned long long)cmd_db);
 +    if (touch_stage == 1) {
-+        printf("Pong touch: DIAG stage1 maps ok, NOT calling bring_up\n");
-+        thread_terminate(current_thread());
-+        return;
++        printf("Pong touch: stage 1 mapped only; no MMIO reads or writes\n");
++        goto out;
 +    }
-+    if (!tlmm || !gcc || !se || !cmd_db || !bring_up()) {
++    /* No TLMM interrupt is installed. Mask both raw capture and output for
++     * GPIO21 before reset can assert it; its input level remains readable. */
++    wr(GPIO_IRQ_CFG(PIN_INT), rd(GPIO_IRQ_CFG(PIN_INT)) & ~0x11u);
++    wr(GPIO_IRQ_STATUS(PIN_INT), 0);
++    gpio_configure(PIN_INT, 0, PULL_UP, 8, false);
++    gpio_output(PIN_RESET, false, PULL_UP, 8);
++    io_supply_on();
++    touch_reset();
++    if (touch_stage == 2) {
++        printf("Pong touch: stage 2 GPIO/AVDD complete; retained IOVDD not measured\n");
++        goto out;
++    }
++    if (touch_stage != 7) {
++        if (!clocks_map() || !clocks_on()) goto out;
++        if (touch_stage < 5) {
++            printf("Pong touch: stage %u clocks complete; no serial-engine access\n", touch_stage);
++            goto out;
++        }
++        for (unsigned i = 0; i < 3; i++) gpio_configure(pins[i], PIN_FUNCTION_SPI, PULL_NONE, 6, false);
++        gpio_configure(PIN_CS, PIN_FUNCTION_SPI, PULL_UP, 6, false);
++    }
++    if (!bring_up()) {
 +        printf("Pong touch: Goodix initialization failed; normal UI boot continues\n");
-+        thread_terminate(current_thread());return;
++        goto out;
 +    }
-+    if (!pong_touch_device_ready()) {thread_terminate(current_thread());return;}
-+    printf("Pong touch: Berlin-D ready, SPI 0x%llx GPIO reset=%u irq=%u, axes %ux%u\n",
-+        se_phys,PIN_RESET,PIN_INT,max_x,max_y);
-+    unsigned idle=0;
++    if (touch_stage == 5 || touch_stage == 7) {
++        printf("Pong touch: stage %u real chip/IC-info identified, no input device or polling\n", touch_stage);
++        goto out;
++    }
++    /* The vendor's brl_resume() resets an already identified controller.
++     * Recheck the actual firmware/report ABI before publishing any input. */
++    touch_reset();
++    if (!goodix_probe(true)) {
++        printf("Pong touch: controller failed identification after resume reset\n");
++        goto out;
++    }
++    const uint8_t clear = 0;
++    if (!goodix_write(touch_address, &clear, 1)) {
++        printf("Pong touch: cannot clear the resumed report status\n");
++        goto out;
++    }
++    if (!pong_touch_device_ready()) {
++        printf("Pong touch: verified controller but devfs publication failed\n");
++        goto out;
++    }
++    printf("Pong touch: Berlin-D ready, SPI %#llx reset=%u irq=%u raw axes=%ux%u transport=%s\n",
++        se_phys, PIN_RESET, PIN_INT, max_x, max_y, spi_transfer == geni_transfer ? "GENI FIFO" : "GPIO SPI");
++    unsigned idle = 0, failures = 0;
 +    for (;;) {
-+        if (!gpio_get(PIN_INT) || ++idle>=10) {idle=0;goodix_poll();}
++        if (!gpio_get(PIN_INT) || ++idle >= 10) {
++            idle = 0;
++            if (goodix_poll()) failures = 0; else failures++;
++            if (!touch_address) {
++                goodix_release();
++                printf("Pong touch: controller identity lost after reset; stop input polling\n");
++                break;
++            }
++            if (failures >= 8) {
++                /* Only end contacts after a real transport/ABI failure,
++                 * never invent them from a timer or IRQ level. */
++                goodix_release();
++                printf("Pong touch: repeated real report failure; stop optional input polling\n");
++                break;
++            }
++        }
 +        sleep_ms(8);
 +    }
++out:
++    thread_terminate(current_thread());
 +}
 +
 +void
 +pong_goodix_init(void)
 +{
-+    uint32_t enabled=1; /* K60: default ON so the driver actually runs */thread_t thread;
-+    /* K60_GATE: PE_parse_boot_argn returns FALSE when the boot-arg is absent,
-+     * so the || below would always return. Ignore the return value and
-+     * let the compiled-in default (enabled=1) decide. */
-+    (void)PE_parse_boot_argn("pong_touch",&enabled,sizeof(enabled));
-+    if (!enabled) return;
-+    if (!configuration()) {printf("Pong touch: missing/incompatible Pong DT; SKIP\n");return;}
-+    printf("Pong touch: DT ok (se=%#llx pins=%u,%u,%u,%u,%u,%u axes %ux%u)\n",
-+        se_phys, pins[0],pins[1],pins[2],pins[3],pins[4],pins[5], max_x, max_y);
-+    /* K60_SE_GATE: the QUP0 SE4 branch is not proven to be clocked yet. Touching
-+     * a gated SE hangs the interconnect and the whole boot dies with no console
-+     * output (observed 2026-11-09). Keep the SE path OFF by default; enable it
-+     * only on an explicit experimental boot with k60_touch_se=1. */
-+    printf("Pong touch: DIAG init entered\n");
-+    uint32_t se_enabled=0;
-+    (void)PE_parse_boot_argn("k60_touch_se",&se_enabled,sizeof(se_enabled));
-+    touch_stage = se_enabled;
-+    {
-+        int fifo = 0;
-+        (void)PE_parse_boot_argn("k60_touch_fifo", &fifo, sizeof(fifo));
-+        k60_touch_allow_fifo_disabled = fifo;
-+        if (fifo) printf("Pong touch: FIFO escape armed (k60_touch_fifo=1)\n");
-+    }
-+    {
-+        int rcg = 0;
-+        (void)PE_parse_boot_argn("k60_touch_rcg", &rcg, sizeof(rcg));
-+        k60_touch_force_rcg = rcg;
-+        if (rcg) printf("Pong touch: forcing RCG path (k60_touch_rcg=1)\n");
-+    }
-+    if (!se_enabled) {
-+        printf("Pong touch: SE path disabled (k60_touch_se not set); DT verified only\n");
++    uint32_t enabled = 1, stage = 6, seconds = 8, hz = 4000000, rcg = 0;
++    thread_t thread;
++    (void)PE_parse_boot_argn("pong_touch", &enabled, sizeof(enabled));
++    (void)PE_parse_boot_argn("k60_touch_se", &stage, sizeof(stage));
++    if (!enabled || !stage) return;
++    if (stage > 7) {
++        printf("Pong touch: unsupported k60_touch_se=%u; normal UI boot continues\n", stage);
 +        return;
 +    }
-+    printf("Pong touch: DIAG gate open, stage=%u; starting thread\n", touch_stage);
-+    if (kernel_thread_start(touch_thread,NULL,&thread)==KERN_SUCCESS) thread_deallocate(thread);
++    if (!configuration()) {
++        printf("Pong touch: missing/incompatible K60 DT; normal UI boot continues\n");
++        return;
++    }
++    (void)PE_parse_boot_argn("k60touchdelay", &seconds, sizeof(seconds));
++    (void)PE_parse_boot_argn("k60touchhz", &hz, sizeof(hz));
++    (void)PE_parse_boot_argn("k60_touch_rcg", &rcg, sizeof(rcg));
++    (void)PE_parse_boot_argn("touch_flip", &flip, sizeof(flip));
++    if (seconds > 60 || !hz || hz > 15000000 || flip > 3 || rcg > 1) {
++        printf("Pong touch: invalid delay/SPI/flip/clock arguments; normal UI boot continues\n");
++        return;
++    }
++    touch_stage = stage;
++    touch_delay_ms = seconds * 1000;
++    spi_hz = hz;
++    force_rcg = rcg != 0;
++    printf("Pong touch: K60 DT raw axes=%ux%u, AVDD=%u; stage %u (5 ID, 6 input, 7 GPIO ID)\n",
++        max_x, max_y, avdd_gpio, stage);
++    if (kernel_thread_start(touch_thread, NULL, &thread) == KERN_SUCCESS) {
++        thread_deallocate(thread);
++    } else {
++        printf("Pong touch: cannot start optional touch thread\n");
++    }
 +}
 +#endif /* PONG */
 
