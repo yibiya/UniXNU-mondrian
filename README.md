@@ -16,7 +16,7 @@ Redmi K60（代号 **mondrian**，高通 **SM8475**）的 UniXNU 设备支持仓
 
 提交规范见 `AGENTS.md` 铁律 11：**改动后及时 commit，阶段性成果及时 push**（push 用 Windows 侧 git）。
 
-## 当前状态（2026-11-09）
+## 当前状态（2026-11-12）
 
 | 项 | 状态 | 证据 |
 |---|---|---|
@@ -24,11 +24,11 @@ Redmi K60（代号 **mondrian**，高通 **SM8475**）的 UniXNU 设备支持仓
 | UFS / APFS 三窗（OS / SystemOS / Data） | ✅ | `PONG APFS: OS root binding PASS`、`K60DATA mounted ro=0 fstype=apfs` |
 | 显示首帧（1440×3200） | ✅ | `K60 DISPLAY: first frame presented (swap 1)` |
 | 背光（DCS 0x11/0x29/0x51） | ✅ | `K60 PANEL: bring-up complete` |
-| 锁屏 / SpringBoard | 待验证 | `entered SpringBoard` 只证明兼容库加载；2026-11-11 cand5 未进入主循环，用户未看到 UI |
+| 桌面 / SpringBoard | 设备通过 | cand7：用户看到状态栏、App Store、Settings、Dock；主循环 `turns=3889`、持续 BGRA swaps |
 | launchd 稳定 | ✅ | 禁用 8 个 App-cryptex job 后不再 `initproc exited` |
 | **实体键（电源/音量）** | 🔄 | 驱动已编译/链接/调用（`bsd_init.o` 有 `U _pong_buttons_init`），`configuration()` 结果不可观测 |
-| **触摸** | 🔄 | 时钟已修（QUP0 **SE1** 偏移 + HWCG 清除）；GENI SE FIFO 模式仍被拒；固件已从真机提取（`goodix_firmware_m11a.bin` 223,744 B，sha `1e647510…`） |
-| GPU（Adreno 730v3 scanout） | ❌ | 三补丁已 rebase（sha `cba010e4`/`77a95ade`/`8bc95a66`），卡在 `libPongAdrenoPlatform.a` 的 `-force_load` 作用域 |
+| **触摸** | 待设备验证 | 已补实际 DT 节点、GPIO71、raw14400×32000、受检 Berlin 报告；删除错误 Pong 供电/RSC 路径。FIFO 禁用需要真实 GPI 或已证实的 GPIO 线序 |
+| GPU（Adreno730v3） | 待设备验证 | 启用实际归档；使用本机 GMU/SQE/ZAP 固件，APSS RSC 仅通过文档定义的 Qualcomm monitor I/O，不直接读挂机寄存器；须验证真实 CP/fence/Metal |
 | WiFi / 蓝牙 / 音频 / 相机 / 传感器 / 电源 | 📋 | 八步调研已完成，实现进行中 |
 
 详细状态与缺口矩阵见 [`E:\k60-work\docs\PORTING-PIPELINE.md`](file:///E:/k60-work/docs/PORTING-PIPELINE.md)。
@@ -41,7 +41,7 @@ Redmi K60（代号 **mondrian**，高通 **SM8475**）的 UniXNU 设备支持仓
 | `porting.toml` | 14 个子系统的输入、发现、证据与完成判据 |
 | `feeds.toml` | 固定的 SoC 源 |
 | `configs/mondrian_defconfig` | 设备内核设置 |
-| `dts/mondrian.dts` | 内存、CPU、外设（含 `unixnu,adt-name` 导出的触摸/按键节点） |
+| `dts/mondrian.dts` | 内存、CPU、UFS 硬件；`board.toml [adt.arm-io]` 提供板级触摸元数据 |
 | `patches/xnu/` | 设备补丁（16.6.1 系列，见 `patches/xnu/series`） |
 | `scripts/` | 设备构建与检查工具 |
 | `drivers/` | PongAdreno / NativeUfs / NativeRamBlock / ArmCpu / ArmDTPlatform / PongMetal |
@@ -92,6 +92,19 @@ publisher barrier 后才连接 Mach listeners；缺少字段会触发 `Event pub
 ```bash
 python3 userland/build.py launchd_cache --jobs /path/to/pong/LaunchDaemons --out ../work/cache
 ```
+
+触摸首轮沿用桌面 cand7 的固件、内存与 root/Data，仅增加 canonical
+`/arm-io/pong-touch`。`k60_touch_se=5 k60_touch_rcg=1` 只读实际 ID；默认
+stage6 才发布 `/dev/pong-touch` 并把校验正确的触点交给 backboardd HID。
+`bitbang-pins` 必须来自独立确认的 MISO/MOSI/CLK/CS 线序，不能扫描排列猜。
+ARM64 的启动参数容量是608字节，新增阶段参数前仅移除诊断用
+`applog=1 applog_name=SpringBoard`；不改 Data UUID、内嵌 PID1 或桌面兼容策略。
+
+GPU 归档从实际 kernel tree 构建，固件目录默认 `.cache/firmware/k60-gpu`，
+可用 `PONG_ADRENO_FIRMWARE_DIR` 指定本机提取目录。`pong_adreno_start=1`
+是独立硬件试验，`pong_touch=0` 隔离触摸；只有真实 GMU/HFI、PAS13/ZAP、
+CP timestamp fence 全部通过后才能打开 Metal/scanout。monitor 拒绝访问是
+真实失败，不能当作“已上电”继续，也不代表 GPU 加速通过。
 
 **路径铁则（重要）**：构建读取的是 `/tmp/usb-cdc-mainline/device`（= `/opt/k60/trees/usb-cdc-mainline/device`，同一 inode）。
 `/mnt/e/hackios/UniXNU-mondrian` 是**另一份 git 副本**。改补丁前必须 `ls -li` 对比 inode、`sha256sum` 比对两侧一致后才可构建。
