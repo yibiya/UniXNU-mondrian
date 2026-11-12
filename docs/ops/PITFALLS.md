@@ -1129,6 +1129,14 @@ DYLD_FALLBACK_LIBRARY_PATH=/usr/lib
 - **修复**：保留主队列上的渲染偏好与 screen-on，删除自动 unlock，局部函数改为 `present_initial_screen` / `start_ui_presentation`，正常本地认证路径不变。已重生成实际 0340 嵌入库（95824B，SHA256 `85f2431d238e7b6250483d69c2fddb11e9d63cf5c9c01c2a192ec54ec896b82a`，4KiB 签名通过）。
 - **检查**：启动后保留原生锁屏；只有真实用户输入才能进入解锁路径。触摸缺失不能用自动解锁掩盖；最终以屏幕及状态转换判定。
 
+### P-75 **壁纸目录可见不等于原生壁纸已选中**
+
+- **症状**：cand16 原生锁屏已出现，但用户确认壁纸全黑；stock-wallpaper bind 和 aliases=4 均成功。
+- **确定的不一致**：20G81 原始素材只有 iPad 目录，默认目录按设备名和精确 logicalScreenClass 筛选，当前 phone 界面无法自动命中。成功挂载仅证明素材可见。
+- **修复**：在原生主队列初始亮屏后，保留已有图片/颜色/动态壁纸，仅对确认为空的配置选择完整的真实 7410 WWDC 2022 bundle。使用原始 `WKWallpaperBundle initWithURL:` 和 `WKSystemShellWallpaperManager setLockScreenWallpaperRepresenting:mirrorToHomeScreen:completion:`，不改文件名、筛选谓词或认证状态。
+- **调试证据**：`kern.pong_diagnostic` 现复用于 SpringBoard/backboard，输出实际 homeButtonType、现有内容、HEIC 文件验证与原生提交。setter completion ABI 是 void()，回调返回不能当成像素成功。源码/API/真实资产依据记录在 `work/touch-gpu/wallpaper-native20G81.json`。
+- **检查**：下一版必须实际显示素材；`existing-content=-1`、文件缺失或 ABI 不符都明确报未实现前提，不伪造成功。COM8 已实测收到 13300 字节并返回 help；这是 CDC 诊断通道，不是 LLDB/Apple usbmux。
+
 ## 台账维护规则
 
 1. 新坑确认后**当场追加**（与 ISSUES 同步，不等收尾）。
