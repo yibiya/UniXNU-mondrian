@@ -1106,6 +1106,14 @@ DYLD_FALLBACK_LIBRARY_PATH=/usr/lib
 - **检查**：`python3 scripts/test-repack-boot.py` 覆盖真实偏移下的固件解压、跨页载荷、固件 CRC 损坏及签名区截断。重建命令：`python3 scripts/repack-boot.py --template /root/k60/work/touch-gpu/gpu8-start.img --ramdisk /root/k60/work/out-cand/mondrian/ipados-16.6.1-20G81/mondrian/payload/payload.img --output /mnt/e/k60-ios/boot-cand13-20261112.img`。
 - **30 秒判定**：有 `ANDROID!` 不等于镜像可启动；从 **4096** 取 kernel 区域，用 `zlib.decompressobj(31)` 检查 EOF 和附加 FDT。不要只在整包里搜索诊断字符串。
 
+### P-72 **UFS Data 后端不能被 payload 门禁强制挂 RAM seed**
+
+- **症状**：修正 v4 偏移后的 cand13 仍无 CDC 日志并回到 fastboot（`console-20261112-100518.json`）。实际 `unixnu.toml` 比可用 cand7 多了 `initrd = "Payloads/scratch-data.img"`。
+- **确定的不一致**：`configs/mondrian_defconfig` 选择 `XNU_OWNER_DATA_UFS=y`、`XNU_NATIVE_RAM_BLOCK=n`；`pong-ufs-data.patch` 明确从已安装的 UFS IOMedia 挂 Data，不使用 seed mapping 或 RAM fallback。旧 `core/scripts/unixnu/payload.py:41-53` 却要求所有 OWNER_DATA_MOUNT 内核提供 RAM seed，导致打包命令恢复了已知不可用的 RAM Data 路径。
+- **修复**：payload 按所选后端决定 seed 前提：UFS Data 不需要 seed，传 seed 则报冲突；内存 Data 保持原始 seed 要求。只重建 payload，无需回退当前触摸、显示、电池或重编内核。
+- **检查**：`python3 core/scripts/test-payload-data.py`；构建 `./core/unixnu payload -D work/device-ui --out work/out-cand`，确认无 `initrd`、无 `scratch-data.img`、ADT 无 RAMDisk，同时保留 `/arm-io/pong-touch`。
+- **边界**：cand13 的零日志不能单独证明 RAM seed 是第二次复位的唯一原因；以去掉冲突后的实机结果判定。
+
 ## 台账维护规则
 
 1. 新坑确认后**当场追加**（与 ISSUES 同步，不等收尾）。
