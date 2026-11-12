@@ -619,15 +619,21 @@ static int existing_wallpaper(id controller)
     id manager=object_property(controller,"wallpaperConfigurationManager");
     SEL get=sel_registerName("wallpaperConfigurationForVariant:includingValuesForTypes:");
     if (!manager || !method_abi(class_getInstanceMethod(object_getClass(manager),get),"@",2,"qQ")) return -1;
+    int content=0;
     for (long long variant=0;variant<2;variant++) {
         id configuration=((id(*)(id,SEL,long long,unsigned long long))objc_msgSend)(manager,get,variant,0x3f);
         if (!configuration) return -1;
         const char *properties[]={"wallpaperImage","wallpaperOriginalImage","wallpaperColor","proceduralWallpaperOptions"};
         for (unsigned i=0;i<sizeof(properties)/sizeof(properties[0]);i++) {
-            if (object_property(configuration,properties[i])) return 1;
+            id value=object_property(configuration,properties[i]);
+            if (value) {
+                content=1;
+                say("Pong UI: wallpaper variant=%lld property=%s class=%s\n",
+                    variant,properties[i],class_getName(object_getClass(value)));
+            }
         }
     }
-    return 0;
+    return content;
 }
 
 static bool wallpaper_asset_present(CFDictionaryRef metadata, CFStringRef key, const char *directory)
@@ -653,8 +659,23 @@ static void select_initial_wallpaper(void)
 {
     id controller=existing_singleton("SBWallpaperController");
     int existing=existing_wallpaper(controller);
-    say("Pong UI: wallpaper existing-content=%d (1=preserved -1=unavailable)\n",existing);
-    if (existing!=0) return;
+    char arguments[1024]={0};size_t length=sizeof(arguments);
+    bool restore=false;
+    if (sysctlbyname("kern.bootargs",arguments,&length,NULL,0)==0) {
+        arguments[sizeof(arguments)-1]=0;
+        const char *option="k60_wallpaper_reset=1";
+        const size_t option_length=strlen(option);
+        for (char *p=arguments;*p;) {
+            while (*p==' ') p++;
+            if (!strncmp(p,option,option_length) && (!p[option_length] || p[option_length]==' '))
+                restore=true;
+            while (*p && *p!=' ') p++;
+        }
+    }
+    say("Pong UI: wallpaper existing-content=%d restore-stock=%d (1=present -1=unavailable)\n",existing,restore);
+    /* Explicit recovery selects real stock through the native setter even if
+     * the old configuration has content. Ordinary boots preserve that choice. */
+    if (!restore && existing!=0) return;
     const char *directory="/Library/Wallpaper/Stills/iPad/7410.WWDC_2022-1024w-1366h@2x~ipad.wallpaper";
     char path[768];snprintf(path,sizeof(path),"%s/Wallpaper.plist",directory);
     CFURLRef url=CFURLCreateFromFileSystemRepresentation(NULL,(const UInt8 *)path,strlen(path),false);
