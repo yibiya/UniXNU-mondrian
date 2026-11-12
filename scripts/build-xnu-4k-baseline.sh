@@ -111,8 +111,8 @@ for PATCH in "${PATCHES[@]}"; do
     echo "Skipping published-freezer-condition.patch: the affected freezer source is absent from this XNU version"
     continue
   fi
-  if [ "$(basename "$PATCH")" = "zzy-native-gpu-addon-mount.patch" ] && [ "${XNU_NATIVE_OFFLINE_GPU:-0}" != 1 ]; then
-    echo "Skipping zzy-native-gpu-addon-mount.patch: offline GPU addon mounting is disabled in this baseline"
+  if [ "$(basename "$PATCH")" = "zzy-native-gpu-addon-mount.patch" ] && [ "${XNU_GPU_ADDON:-0}" != 1 ]; then
+    echo "Skipping zzy-native-gpu-addon-mount.patch: GPU addon mounting is disabled in this baseline"
     continue
   fi
   if [ "$(basename "$PATCH")" = "zzz-boot-progress.patch" ] && [ "${XNU_BOOT_PROGRESS:-0}" != 1 ]; then
