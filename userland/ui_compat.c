@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/sysctl.h>
+#include <sys/stat.h>
 #include <sys/ucontext.h>
 #include <unistd.h>
 #include "touch.h"
@@ -46,14 +47,14 @@ static IMP localized_name_original;
 static bool about_radios_excluded;
 static void (*settings_previous_exception)(id);
 static bool settings_exception_installed;
-static int settings_diagnostic_mib[CTL_MAXNAME];
-static size_t settings_diagnostic_mib_count;
+static int ui_diagnostic_mib[CTL_MAXNAME];
+static size_t ui_diagnostic_mib_count;
 static uintptr_t settings_cache_base;
 
-static void settings_record(const char *text)
+static void ui_record(const char *text)
 {
-    if (settings_diagnostic_mib_count && text)
-        (void)sysctl(settings_diagnostic_mib,(u_int)settings_diagnostic_mib_count,
+    if (ui_diagnostic_mib_count && text)
+        (void)sysctl(ui_diagnostic_mib,(u_int)ui_diagnostic_mib_count,
                      NULL,NULL,(void *)text,strnlen(text,1023));
 }
 
@@ -71,7 +72,7 @@ static void settings_fault(int number,siginfo_t *info,void *saved)
         "fatal signal=%d address=%p pc=0x%llx lr=0x%llx fp=0x%llx cache_base=0x%lx",
         number,info?info->si_addr:NULL,(unsigned long long)pc,
         (unsigned long long)lr,(unsigned long long)fp,(unsigned long)settings_cache_base);
-    if (n>0) settings_record(line);
+    if (n>0) ui_record(line);
     /* Read bounded frames through the kernel instead of dereferencing a
      * possibly corrupt user stack in the fault handler (HackiOS strategy,
      * with failed reads terminating the walk). */
@@ -81,7 +82,7 @@ static void settings_fault(int number,siginfo_t *info,void *saved)
         if (vm_read_overwrite(mach_task_self(),(vm_address_t)cursor,sizeof(frame),
                 (vm_address_t)frame,&copied)!=KERN_SUCCESS || copied!=sizeof(frame)) break;
         snprintf(line,sizeof(line),"fatal frame[%u] return=0x%llx",i,(unsigned long long)frame[1]);
-        settings_record(line);
+        ui_record(line);
         if (frame[0]<=cursor || frame[0]-cursor>0x100000) break;
         cursor=frame[0];
     }
@@ -95,10 +96,7 @@ static void settings_record_init(void)
 {
     size_t bytes=0;
     settings_cache_base=(uintptr_t)_dyld_get_shared_cache_range(&bytes);
-    settings_diagnostic_mib_count=CTL_MAXNAME;
-    if (sysctlnametomib("kern.pong_diagnostic",settings_diagnostic_mib,
-                       &settings_diagnostic_mib_count)!=0) settings_diagnostic_mib_count=0;
-    settings_record("Preferences adapter entered 20G81/v94");
+    ui_record("Preferences adapter entered 20G81/v94");
     struct sigaction action;
     memset(&action,0,sizeof(action));
     action.sa_sigaction=settings_fault;
@@ -118,7 +116,7 @@ static void say(const char *fmt, ...)
     int n=vsnprintf(b,sizeof(b),fmt,ap); va_end(ap);
     if (n>0) {
         (void)write(2,b,(size_t)n<sizeof(b)?(size_t)n:sizeof(b)-1);
-        if (is_settings) settings_record(b);
+        ui_record(b);
     }
 }
 
@@ -370,12 +368,12 @@ static void settings_exception(id exception)
         if (i==2) value=((id(*)(id,SEL))objc_msgSend)(value,sel_registerName("description"));
         const char *s=value?((const char *(*)(id,SEL))objc_msgSend)(value,utf8):NULL;
         if (!s) s="(unavailable)";
-        settings_record(selectors[i]);
+        ui_record(selectors[i]);
         /* Each sysctl copy is bounded, including a long exception stack. */
         for (size_t at=0,bytes=strnlen(s,16384);at<bytes;at+=900) {
             char part[901];
             size_t count=bytes-at<900?bytes-at:900;
-            memcpy(part,s+at,count);part[count]=0;settings_record(part);
+            memcpy(part,s+at,count);part[count]=0;ui_record(part);
         }
         say("Pong Settings exception %s: %.600s\n",selectors[i],s);
         if (fd>=0) {
@@ -606,11 +604,127 @@ static int bool_property(id object, const char *name)
     return ((BOOL(*)(id,SEL))objc_msgSend)(object,sel)?1:0;
 }
 
+static id object_property(id object, const char *name)
+{
+    SEL sel=sel_registerName(name);
+    if (!object || !method_abi(class_getInstanceMethod(object_getClass(object),sel),"@",0,"")) return nil;
+    return ((id(*)(id,SEL))objc_msgSend)(object,sel);
+}
+
+/* Original 20G81 WKSpringBoardMigrationInputSource uses variant 0 for lock,
+ * 1 for home and values mask 0x3f. Preserve an existing configured picture,
+ * procedural wallpaper or color; an unavailable configuration is not empty. */
+static int existing_wallpaper(id controller)
+{
+    id manager=object_property(controller,"wallpaperConfigurationManager");
+    SEL get=sel_registerName("wallpaperConfigurationForVariant:includingValuesForTypes:");
+    if (!manager || !method_abi(class_getInstanceMethod(object_getClass(manager),get),"@",2,"qQ")) return -1;
+    for (long long variant=0;variant<2;variant++) {
+        id configuration=((id(*)(id,SEL,long long,unsigned long long))objc_msgSend)(manager,get,variant,0x3f);
+        if (!configuration) return -1;
+        const char *properties[]={"wallpaperImage","wallpaperOriginalImage","wallpaperColor","proceduralWallpaperOptions"};
+        for (unsigned i=0;i<sizeof(properties)/sizeof(properties[0]);i++) {
+            if (object_property(configuration,properties[i])) return 1;
+        }
+    }
+    return 0;
+}
+
+static bool wallpaper_asset_present(CFDictionaryRef metadata, CFStringRef key, const char *directory)
+{
+    CFTypeRef name=CFDictionaryGetValue(metadata,key);
+    char filename[256],path[768];struct stat st;
+    if (!name || CFGetTypeID(name)!=CFStringGetTypeID() ||
+        !CFStringGetCString(name,filename,sizeof(filename),kCFStringEncodingUTF8) ||
+        !filename[0] || strchr(filename,'/')) return false;
+    int n=snprintf(path,sizeof(path),"%s/%s",directory,filename);
+    bool present=n>0 && (size_t)n<sizeof(path) && stat(path,&st)==0 && S_ISREG(st.st_mode) && st.st_size>0;
+    say("Pong UI: genuine wallpaper asset %s present=%d\n",filename,present);
+    return present;
+}
+
+/* Explicitly select the supplied iPad restore's real still, rather than its
+ * unavailable phone catalogue. No filenames/logicalScreenClass are rewritten
+ * and shouldLoadWallpaperBundleAtURL: stays untouched. Original 20G81 cache
+ * UUID 7ce77c5d46243b5aa84f902569820238: initWithURL: 0x1b23124cc loads
+ * Wallpaper.plist; native setter 0x1b2336ccc resolves file-backed previews and
+ * sends them through the system wallpaper service, not a substitute view. */
+static void select_initial_wallpaper(void)
+{
+    id controller=existing_singleton("SBWallpaperController");
+    int existing=existing_wallpaper(controller);
+    say("Pong UI: wallpaper existing-content=%d (1=preserved -1=unavailable)\n",existing);
+    if (existing!=0) return;
+    const char *directory="/Library/Wallpaper/Stills/iPad/7410.WWDC_2022-1024w-1366h@2x~ipad.wallpaper";
+    char path[768];snprintf(path,sizeof(path),"%s/Wallpaper.plist",directory);
+    CFURLRef url=CFURLCreateFromFileSystemRepresentation(NULL,(const UInt8 *)path,strlen(path),false);
+    CFReadStreamRef stream=url?CFReadStreamCreateWithFile(NULL,url):NULL;
+    CFPropertyListRef plist=NULL;
+    if (stream && CFReadStreamOpen(stream)) {
+        plist=CFPropertyListCreateWithStream(NULL,stream,0,kCFPropertyListImmutable,NULL,NULL);
+        CFReadStreamClose(stream);
+    }
+    if (stream) CFRelease(stream);
+    if (url) CFRelease(url);
+    bool valid=plist && CFGetTypeID(plist)==CFDictionaryGetTypeID();
+    CFDictionaryRef metadata=valid?(CFDictionaryRef)plist:NULL;
+    CFTypeRef identifier=metadata?CFDictionaryGetValue(metadata,CFSTR("identifier")):NULL;
+    int number=0;
+    valid=valid && identifier && CFGetTypeID(identifier)==CFNumberGetTypeID() &&
+          CFNumberGetValue(identifier,kCFNumberIntType,&number) && number==7410 &&
+          wallpaper_asset_present(metadata,CFSTR("thumbnailImageFileName"),directory);
+    CFTypeRef assets=metadata?CFDictionaryGetValue(metadata,CFSTR("assets")):NULL;
+    CFTypeRef both=assets && CFGetTypeID(assets)==CFDictionaryGetTypeID()?
+        CFDictionaryGetValue(assets,CFSTR("lockAndHome")):NULL;
+    valid=valid && both && CFGetTypeID(both)==CFDictionaryGetTypeID();
+    const CFStringRef appearances[]={CFSTR("default"),CFSTR("dark")};
+    for (unsigned i=0;valid && i<sizeof(appearances)/sizeof(appearances[0]);i++) {
+        CFTypeRef asset=CFDictionaryGetValue(both,appearances[i]);
+        valid=asset && CFGetTypeID(asset)==CFDictionaryGetTypeID() &&
+            wallpaper_asset_present(asset,CFSTR("fullSizeImageFileName"),directory) &&
+            wallpaper_asset_present(asset,CFSTR("thumbnailImageFileName"),directory);
+    }
+    if (plist) CFRelease(plist);
+    if (!valid) {say("Pong UI: genuine wallpaper bootstrap SKIP (required 7410 metadata/assets unavailable)\n");return;}
+    Class bundle_class=objc_getClass("WKWallpaperBundle"),shell_class=objc_getClass("WKSystemShellWallpaperManager");
+    SEL alloc=sel_registerName("alloc"),init=sel_registerName("initWithURL:"),shared=sel_registerName("sharedManager");
+    SEL set=sel_registerName("setLockScreenWallpaperRepresenting:mirrorToHomeScreen:completion:");
+    Method setter=shell_class?class_getInstanceMethod(shell_class,set):NULL;
+    if (!method_abi(bundle_class?class_getClassMethod(bundle_class,alloc):NULL,"@",0,"") ||
+        !method_abi(bundle_class?class_getInstanceMethod(bundle_class,init):NULL,"@",1,"@") ||
+        !method_abi(shell_class?class_getClassMethod(shell_class,shared):NULL,"@",0,"") ||
+        !method_abi(setter,"v",3,"@B@") || strcmp(method_getTypeEncoding(setter),"v36@0:8@16B24@?28")) {
+        say("Pong UI: genuine wallpaper bootstrap SKIP (native 20G81 WallpaperKit ABI unavailable)\n");return;
+    }
+    id shell=((id(*)(id,SEL))objc_msgSend)((id)shell_class,shared);
+    url=CFURLCreateFromFileSystemRepresentation(NULL,(const UInt8 *)directory,strlen(directory),true);
+    if (!shell || !url) {if(url)CFRelease(url);say("Pong UI: genuine wallpaper bootstrap SKIP (native manager/URL unavailable)\n");return;}
+    id bundle=((id(*)(id,SEL))objc_msgSend)((id)bundle_class,alloc);
+    bundle=((id(*)(id,SEL,id))objc_msgSend)(bundle,init,(id)url);
+    CFRelease(url);
+    if (!bundle) {say("Pong UI: genuine wallpaper bootstrap SKIP (native bundle rejected)\n");return;}
+    say("Pong UI: submitting genuine wallpaper 7410 native lock+home path=%s\n",directory);
+    ((void(*)(id,SEL,id,BOOL,void(^)(void)))objc_msgSend)(shell,set,bundle,YES,^{
+        /* Original completion is void: returning is not proof of pixels. */
+        say("Pong UI: native wallpaper completion returned; visual pixels remain to be observed\n");
+    });
+    ((void(*)(id,SEL))objc_msgSend)(bundle,sel_registerName("release"));
+}
+
+static long long home_button_type(void)
+{
+    id platform=existing_singleton("BSPlatform");SEL sel=sel_registerName("homeButtonType");
+    Method method=platform?class_getInstanceMethod(object_getClass(platform),sel):NULL;
+    if (method_abi(method,"q",0,"")) return ((long long(*)(id,SEL))objc_msgSend)(platform,sel);
+    if (method_abi(method,"i",0,"")) return ((int(*)(id,SEL))objc_msgSend)(platform,sel);
+    return -1;
+}
+
 static void show_ui_state(const char *phase, id manager, id backlight)
 {
-    say("Pong UI: %s locked=%d screen=%d dim=%d pending-unblank=%d\n",phase,
+    say("Pong UI: %s locked=%d screen=%d dim=%d pending-unblank=%d homeButtonType=%lld\n",phase,
         bool_property(manager,"isUILocked"),bool_property(backlight,"screenIsOn"),
-        bool_property(backlight,"screenIsDim"),bool_property(backlight,"isPendingScreenUnblankAfterCACommit"));
+        bool_property(backlight,"screenIsDim"),bool_property(backlight,"isPendingScreenUnblankAfterCACommit"),home_button_type());
 }
 
 static void present_initial_screen(void *unused)
@@ -631,6 +745,7 @@ static void present_initial_screen(void *unused)
     if (backlight && method_abi(class_getInstanceMethod(object_getClass(backlight),wake),"v",1,"q"))
         ((void(*)(id,SEL,long long))objc_msgSend)(backlight,wake,0);
     show_ui_state("screen-on request returned",manager,backlight);
+    select_initial_wallpaper();
 }
 
 /* Bounded snapshots distinguish an idle event loop from startup still running.
@@ -821,10 +936,13 @@ __attribute__((constructor)) static void pong_ui_init(void)
     if (!is_springboard && !backboard && !is_media && !is_settings && strncmp(name,"containermanagerd",17)!=0) return;
     /* HackiOS exposes the actual driver's last printf before a process aborts. */
     (void)dup2(2,1); setvbuf(stdout,NULL,_IONBF,0); setvbuf(stderr,NULL,_IONBF,0);
+    ui_diagnostic_mib_count=CTL_MAXNAME;
+    if (sysctlnametomib("kern.pong_diagnostic",ui_diagnostic_mib,
+                       &ui_diagnostic_mib_count)!=0) ui_diagnostic_mib_count=0;
     say("Pong UI: 20G81 compatibility library entered %s\n",name);
     if (is_settings) {
         settings_record_init();
-        pong_settings_icons_start(settings_record);
+        pong_settings_icons_start(ui_record);
     }
     if (is_springboard) start_ui_presentation();
     if (backboard) {install_renderer_hook();pong_touch_start();}
