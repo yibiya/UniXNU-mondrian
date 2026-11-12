@@ -413,9 +413,9 @@ static void install_settings_hooks(void)
     }
 }
 
-/* This port has no paired-watch/Bluetooth transport. 20G81's delayed unlock
- * otherwise queries AutoUnlock through SCDynamicStore on the main thread,
- * exactly where v84's retained stack waits. Keep ordinary local unlocking. */
+/* This port has no paired-watch/Bluetooth transport. AutoUnlock queries
+ * SCDynamicStore on the main thread, where v84's retained stack waits.
+ * Keep ordinary local unlocking. */
 static BOOL no_watch_unlock(id self, SEL sel)
 {
     (void)self;(void)sel;
@@ -573,11 +573,10 @@ static void install_objc_hooks(void)
 static void image_added(const struct mach_header *h, intptr_t slide)
 { (void)h;(void)slide;install_objc_hooks(); }
 
-/* HackiOS's delayed unlock is needed while Pong has no input path into the
- * iOS lock screen. Use the actual 20G81 int argument (20F66 used long in the
- * reference's cast), and keep the ordinary authentication decision intact.
- * A bounded idle assertion also keeps a bring-up screen visible without an
- * Apple HID wake source. No private object offsets are used here. */
+/* Prepare the initial screen without requesting an unlock. Keep the native
+ * lock screen and ordinary authentication decisions intact. A bounded idle
+ * assertion keeps the bring-up screen visible without an Apple HID wake
+ * source. No private object offsets are used here. */
 static bool method_abi(Method method, const char *result, unsigned argc, const char *arguments)
 {
     if (!method || method_getNumberOfArguments(method)!=argc+2) return false;
@@ -614,7 +613,7 @@ static void show_ui_state(const char *phase, id manager, id backlight)
         bool_property(backlight,"screenIsDim"),bool_property(backlight,"isPendingScreenUnblankAfterCACommit"));
 }
 
-static void present_home(void *unused)
+static void present_initial_screen(void *unused)
 {
     (void)unused;
     /* 0403: reachable only once the main queue is running, which is also when
@@ -631,13 +630,7 @@ static void present_home(void *unused)
     SEL wake=sel_registerName("turnOnScreenFullyWithBacklightSource:");
     if (backlight && method_abi(class_getInstanceMethod(object_getClass(backlight),wake),"v",1,"q"))
         ((void(*)(id,SEL,long long))objc_msgSend)(backlight,wake,0);
-    SEL unlock=sel_registerName("unlockUIFromSource:withOptions:");
-    if (bool_property(manager,"isUILocked")==1 &&
-        method_abi(class_getInstanceMethod(object_getClass(manager),unlock),"Bc",2,"i@")) {
-        BOOL accepted=((BOOL(*)(id,SEL,int,id))objc_msgSend)(manager,unlock,24,nil);
-        say("Pong UI: HackiOS delayed home request accepted=%d\n",accepted);
-    }
-    show_ui_state("home request returned",manager,backlight);
+    show_ui_state("screen-on request returned",manager,backlight);
 }
 
 /* Bounded snapshots distinguish an idle event loop from startup still running.
@@ -678,7 +671,7 @@ static void main_snapshot(void *context)
     }
 }
 
-static void start_home_transition(void)
+static void start_ui_presentation(void)
 {
     ui_main_thread=mach_thread_self();
     size_t length=0;
@@ -686,7 +679,7 @@ static void start_home_transition(void)
     ui_cache_slide=cache?(uintptr_t)cache-0x180000000ULL:0;
     CFRunLoopObserverRef observer=CFRunLoopObserverCreate(NULL,kCFRunLoopBeforeWaiting,true,2000001,main_turn,NULL);
     if (observer) { CFRunLoopAddObserver(CFRunLoopGetMain(),observer,kCFRunLoopCommonModes);CFRelease(observer); }
-    dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC),dispatch_get_main_queue(),NULL,present_home);
+    dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC),dispatch_get_main_queue(),NULL,present_initial_screen);
     dispatch_queue_t queue=dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW,0);
     dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW,60*NSEC_PER_SEC),queue,(void *)60,main_snapshot);
     dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW,120*NSEC_PER_SEC),queue,(void *)120,main_snapshot);
@@ -833,7 +826,7 @@ __attribute__((constructor)) static void pong_ui_init(void)
         settings_record_init();
         pong_settings_icons_start(settings_record);
     }
-    if (is_springboard) start_home_transition();
+    if (is_springboard) start_ui_presentation();
     if (backboard) {install_renderer_hook();pong_touch_start();}
     _dyld_register_func_for_add_image(image_added);
 }
