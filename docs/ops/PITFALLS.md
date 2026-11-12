@@ -1114,6 +1114,14 @@ DYLD_FALLBACK_LIBRARY_PATH=/usr/lib
 - **检查**：`python3 core/scripts/test-payload-data.py`；构建 `./core/unixnu payload -D work/device-ui --out work/out-cand`，确认无 `initrd`、无 `scratch-data.img`、ADT 无 RAMDisk，同时保留 `/arm-io/pong-touch`。
 - **边界**：cand13 的零日志不能单独证明 RAM seed 是第二次复位的唯一原因；以去掉冲突后的实机结果判定。
 
+### P-73 **共享 ADT 转换不能漏掉已工作的 CPU/UFS 合同**
+
+- **症状**：cand14 仍在 CDC 枚举前复位（`console-20261112-101525.json`）。语义对比 cand7 与实际 cand14 ADT，除新触摸节点外，还少了 `/cpus/max_cpus`、8 个 `cpu-id` 和 9 个 UFS `pong,*` 属性。
+- **根因**：`core/scripts/unixnu/devicetree.py` CPU 生成仅输出 `reg`，缺少逻辑 CPU ID；`hardware_properties` 的类型集合也未包含 DTS 已有的 UFS 属性。`drivers/NativeUfs/NativeUfs.cpp:155-178` 在首个 MMIO 前逐一验证这些属性，缺失就拒绝启动。
+- **修复**：生成从零开始连续的逻辑 `cpu-id` 和启用 CPU 总数，保留原 MPIDR；把已有 UFS 绝对窗口按 u64、stream/IRQ/计数按 u32 转小端。没有改硬件地址，没有绕过驱动验证。
+- **检查**：`python3 core/scripts/test-devicetree-handoff.py` 覆盖禁用 CPU 导致的逻辑编号间隙、物理 affinity 保持、UFS 窗口宽度与字节序。新载荷必须与 cand7 的 CPU/UFS 合同一致，同时保留新触摸节点。
+- **边界**：这些是确定的合同缺失；是否解释所有前控制台复位，以修复后实机结果判定。
+
 ## 台账维护规则
 
 1. 新坑确认后**当场追加**（与 ISSUES 同步，不等收尾）。
