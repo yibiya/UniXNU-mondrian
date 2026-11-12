@@ -63,6 +63,8 @@ copy_new(const char *source, const char *dest, int mode, int uid, int gid)
     return chmod(dest, mode) || chown(dest, uid, gid) ? -1 : 0;
 }
 
+static int unpack_boot_jobs(const char *archive, const char *dest);
+
 static void
 prepare_var(void)
 {
@@ -111,7 +113,25 @@ prepare_var(void)
     int fd = open("/private/var/.pong-write-check", O_CREAT | O_EXCL | O_WRONLY, 0600);
     if (fd < 0) { printf("Pong init: Data not writable: errno=%d\n", errno); return; }
     close(fd); unlink("/private/var/.pong-write-check");
-    if (read_text("/pong/etc/var.skel", buf, sizeof(buf)) < 0) {
+    /*
+     * 0406: apply() normally ships /pong/etc/var.skel and /pong/var-seed on the
+     * OS window, and that step never ran here: the root is a sealed union with
+     * no /pong at all. The kernel writes the same tree as a PONGJOB1 archive
+     * next to the helper, so expand it before reading the skeleton.
+     */
+    {
+        struct stat sk;
+        if (stat("/pong/etc/var.skel", &sk) != 0) {
+            /* unpack_boot_jobs only creates entries under dest, never dest
+             * itself; boot-jobs works because K60DATA pre-creates that one. */
+            mkdir("/private/var/pong/root", 0755);
+            int n = unpack_boot_jobs("/private/var/pong/var.pack",
+                "/private/var/pong/root");
+            printf("Pong init: var.pack expand result=%d\n", n);
+        }
+    }
+    if (read_text("/pong/etc/var.skel", buf, sizeof(buf)) < 0 &&
+        read_text("/private/var/pong/root/pong/etc/var.skel", buf, sizeof(buf)) < 0) {
         printf("Pong init: var.skel unavailable: errno=%d\n", errno); return;
     }
     int made = 0, errors = 0;
@@ -135,7 +155,19 @@ prepare_var(void)
             struct stat st;
             if (lstat(field[2], &st) != 0) result = symlink(field[1], field[2]);
         } else if (count == 6 && field[0][0] == 'f') {
-            result = copy_new(field[5], field[4], (int)number(field[1], 8),
+            char source[512];
+            struct stat probe;
+            /* 0406: apply() would have staged these under /pong on the OS
+             * window, which this sealed root cannot carry. The archive expands
+             * to the writable volume instead, so try that prefix first. */
+            strcpy(source, field[5]);
+            if (stat(source, &probe) != 0 && strncmp(field[5], "/pong/", 6) == 0) {
+                char rebased[512];
+                strcpy(rebased, "/private/var/pong/root");
+                strcpy(rebased + strlen("/private/var/pong/root"), field[5]);
+                strcpy(source, rebased);
+            }
+            result = copy_new(source, field[4], (int)number(field[1], 8),
                               (int)number(field[2], 10), (int)number(field[3], 10));
         }
         errors += result != 0;
@@ -384,9 +416,29 @@ static void
 configure_ui_library(void)
 {
     const char *path="/private/var/pong/libpong-ui.dylib";
+    /* 0404: SpringBoard is injected by default. k60_ui_springboard=0 removes
+     * only that target, which is how the constructor was ruled out as the cause
+     * of the stuck main queue; leaving that experiment as the default made
+     * boot-v36..v39 present no frame at all. */
     const char *base="/private/var/pong/libpong-ui.dylib SpringBoard backboardd containermanagerd containermanagerd_system mediaserverd Preferences";
     const char *metal="; /private/var/pong/PongAdrenoMetal.bundle/PongAdrenoMetal backboardd";
     char conf[512],args[4096]={0};size_t length=sizeof(args);
+    {
+        int k60_sb = 1;
+        if (sysctlbyname("kern.bootargs", args, &length, NULL, 0) == 0) {
+            for (char *p=args;*p;) {
+                while(*p==' ')p++;
+                if (strncmp(p,"k60_ui_springboard=0",20)==0 && (!p[20] || p[20]==' ')) {
+                    k60_sb = 0;
+                }
+                while (*p && *p!=' ') p++;
+            }
+        }
+        if (!k60_sb) {
+            base = "/private/var/pong/libpong-ui.dylib backboardd containermanagerd containermanagerd_system mediaserverd Preferences";
+        }
+        args[0]=0; length=sizeof(args);
+    }
     memcpy(conf,base,strlen(base)+1);
     struct stat st;
     if (stat(path,&st)!=0 || (st.st_mode&S_IFMT)!=S_IFREG || st.st_uid!=0) {

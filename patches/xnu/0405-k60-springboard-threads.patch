@@ -1,0 +1,64 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -2290,6 +2290,61 @@
+ 			}
+ 		}
+ 	}
++		/*
++		 * 0405: the user-side probes all run from a dispatch timer, so they
++		 * cannot report anything while the main queue is the thing that is
++		 * stuck. Read the main thread's registers from the kernel instead.
++		 *
++		 * The target is matched by name because launchd assigns its pid per
++		 * boot. proc_thread() returns the primary thread, and thread_reference
++		 * keeps it alive across find_user_regs(); both are released before the
++		 * sleep so a busy target cannot stall the heartbeat.
++		 */
++		{
++			static int k60_sb_reports = 0;
++
++			if (k60_sb_reports < 8 && ml_get_interrupts_enabled()) {
++				extern struct arm_saved_state *find_user_regs(thread_t);
++				proc_t k60_sbp = PROC_NULL;
++				int k60_pid;
++
++				for (k60_pid = 1; k60_pid < 4096 && k60_sbp == PROC_NULL; k60_pid++) {
++					proc_t k60_c = proc_find(k60_pid);
++
++					if (k60_c == PROC_NULL) {
++						continue;
++					}
++					if (strcmp(k60_c->p_comm, "SpringBoard") == 0) {
++						k60_sbp = k60_c;
++					} else {
++						proc_rele(k60_c);
++					}
++				}
++				if (k60_sbp != PROC_NULL) {
++					thread_t k60_thr = proc_thread(k60_sbp);
++
++					printf("K60SB pid=%d thread=%p\n",
++					    proc_getpid(k60_sbp), (void *)k60_thr);
++					if (k60_thr != THREAD_NULL) {
++						struct arm_saved_state *k60_ss;
++
++						thread_reference(k60_thr);
++						k60_ss = find_user_regs(k60_thr);
++						if (k60_ss != NULL) {
++							printf("K60SB pc=%#llx lr=%#llx sp=%#llx\n",
++							    (unsigned long long)get_saved_state_pc(k60_ss),
++							    (unsigned long long)get_saved_state_lr(k60_ss),
++							    (unsigned long long)get_saved_state_sp(k60_ss));
++						} else {
++							printf("K60SB no-user-regs\n");
++						}
++						thread_deallocate(k60_thr);
++					}
++					proc_rele(k60_sbp);
++					k60_sb_reports++;
++				}
++			}
++		}
+ 	assert_wait_timeout((event_t)&k60_hb_started, THREAD_UNINT, 15, NSEC_PER_SEC);
+ 		{
+ 		extern int k60_probe_ready;
