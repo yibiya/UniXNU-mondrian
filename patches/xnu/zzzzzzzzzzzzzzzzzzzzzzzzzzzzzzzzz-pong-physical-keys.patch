@@ -98,7 +98,10 @@
          lck_mtx_unlock(&touch_lock);
          return uiomove((caddr_t)&sample,sizeof(sample),uio);
      }
-@@ -75,14 +87,21 @@
+@@ -72,17 +84,24 @@
+ static const struct cdevsw touch_cdevsw={
+     .d_open=touch_open,.d_close=touch_close,.d_read=touch_read,.d_write=eno_rdwrt,
+     .d_ioctl=eno_ioctl,.d_stop=eno_stop,.d_reset=eno_reset,.d_select=eno_select,
      .d_mmap=eno_mmap,.d_strategy=eno_strat,.d_type=0,
  };
  
@@ -129,7 +132,7 @@
  #endif
 --- /dev/null
 +++ b/bsd/dev/pong_buttons.c
-@@ -0,0 +1,147 @@
+@@ -0,0 +1,149 @@
 +/* Pong SM8475 PMIC keys. Read-only peripheral access, adapted from HackiOS
 + * redwood_buttons.c (APSL 2.0) and NothingOSS spmi-pmic-arb.c register layouts.
 + * No PMIC configuration/reset/supply writes and no display/GPU dependency. */
@@ -148,6 +151,11 @@
 +static vm_offset_t core,cnfg,observer;
 +static bool v7;
 +static uint32_t channels;
++/* Android's DT binds KEY_VOLUMEUP to PM8350 (pm8350@1) SPMI GPIO6, active
++ * low: gpios = <0x57b 6 1>, and 0x57b is that chip's pinctrl phandle. It is
++ * not a TLMM pin and not a PMIC PON status bit. KEY_VOLUMEDOWN is the PMK8350
++ * resin key, reported through its own interrupt. */
++#define SPARE_PPID 0x18d
 +struct peripheral {uint16_t ppid,channel;bool found;};
 +static struct peripheral pon={.ppid=0x013},pin={.ppid=0x18d};
 +struct key {bool usable,live,last,down;uint32_t code;};
@@ -227,30 +235,27 @@
 +    uint8_t id[2],state=0,c[8];
 +    if (read_registers(&pon,4,id,2) && id[0]==1 && id[1]==9 &&
 +        read_registers(&pon,0x10,&state,1)) {
-+        keys[0].usable=keys[2].usable=true;
-+        keys[0].last=(state&0x80)!=0;keys[2].last=(state&0x40)!=0;
++        /* Only the PON pwrkey is a PON status bit. Android's own DT binds
++         * KEY_VOLUMEUP to TLMM GPIO6 and KEY_VOLUMEDOWN to the PMIC resin IRQ,
++         * so reading 0x40 here made both volume keys dead. */
++        keys[0].usable=true;
++        keys[0].last=(state&0x80)!=0;
 +    }
-+    if (read_registers(&pin,4,id,2) && id[0]==0x10 && id[1]>=0x10 && id[1]<=0x13 &&
-+        read_registers(&pin,0x40,c,8) && (c[0]&3)==0 && (c[2]&7)<4 && (c[6]&0x80) &&
-+        read_registers(&pin,0x10,&state,1)) {
-+        keys[1].usable=true;keys[1].last=(state&1)==0;
-+    }
-+    if (!(keys[0].usable || keys[1].usable) || !pong_buttons_device_ready()) {
++    /* Volume keys are NOT PON status bits. Android binds KEY_VOLUMEUP to the
++     * PM8350 SPMI GPIO6 (active low) and KEY_VOLUMEDOWN to the PMK8350 resin
++     * interrupt, so publishing them from 0x40 fabricated false presses. They
++     * stay unpublished until their own peripherals are implemented. */
++    if (!keys[0].usable || !pong_buttons_device_ready()) {
 +        printf("Pong keys: no verified input peripheral; SKIP\n");goto out;
 +    }
 +    for (unsigned i=0;i<3;i++) keys[i].live=keys[i].usable && !keys[i].last;
-+    printf("Pong keys: arbiter v%u channels=%u PON=%u GPIO6=%u; power=%u up=%u down=%u\n",
-+        v7?7:5,channels,pon.channel,pin.channel,keys[0].usable,keys[1].usable,keys[2].usable);
++    printf("Pong keys: arbiter v%u channels=%u PON=%u; power=%u up=%u down=%u\n",
++        v7?7:5,channels,pon.channel,keys[0].usable,keys[1].usable,keys[2].usable);
 +    unsigned failures=0;
 +    for (;;) {
 +        bool good=true;
 +        if (keys[0].usable) {
-+            if (read_registers(&pon,0x10,&state,1)) {
-+                look(&keys[0],(state&0x80)!=0);look(&keys[2],(state&0x40)!=0);
-+            } else good=false;
-+        }
-+        if (keys[1].usable) {
-+            if (read_registers(&pin,0x10,&state,1)) look(&keys[1],(state&1)==0);
++            if (read_registers(&pon,0x10,&state,1)) look(&keys[0],(state&0x80)!=0);
 +            else good=false;
 +        }
 +        failures=good?0:failures+1;
