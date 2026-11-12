@@ -814,7 +814,7 @@ index 0000000..b033b90
 +    }
 +    /* misc+52/+54 are reserved1/reserved2 in the Berlin wire ABI, NOT axes.
 +     * K60's raw limits remain the validated ADT 14400x32000. */
-+    fw_buffer_address = le32(info + offset + 24);
++    fw_buffer_address = le32(info + offset + 18);
 +    touch_address = address;
 +    command_address = command;
 +    if (verbose) printf("goodix: IC-info length=%u misc=%u touch=%#x command=%#x head=%u point=%u raw axes=%ux%u\n",
@@ -1003,7 +1003,7 @@ index 0000000..b033b90
 +		unsigned chunk = sizeof(k60_cfg) - off < 64 ? sizeof(k60_cfg) - off : 64;
 +		uint8_t back[64];
 +		if (!goodix_write(fw_buffer + off, k60_cfg + off, chunk)) { bad++; break; }
-+		if (goodix_read(fw_buffer + off, back, chunk) && memcmp(back, k60_cfg + off, chunk) != 0) bad++;
++		if (!goodix_read(fw_buffer + off, back, chunk) || memcmp(back, k60_cfg + off, chunk) != 0) bad++;
 +		off += chunk;
 +	}
 +	printf("goodix: CFG-DL wrote=%u/%u bad=%u\n", off, (unsigned)sizeof(k60_cfg), bad);
