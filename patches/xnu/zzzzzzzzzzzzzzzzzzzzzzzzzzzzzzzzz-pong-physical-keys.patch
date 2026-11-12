@@ -132,7 +132,7 @@
  #endif
 --- /dev/null
 +++ b/bsd/dev/pong_buttons.c
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,172 @@
 +/* Pong SM8475 PMIC keys. Read-only peripheral access, adapted from HackiOS
 + * redwood_buttons.c (APSL 2.0) and NothingOSS spmi-pmic-arb.c register layouts.
 + * No PMIC configuration/reset/supply writes and no display/GPU dependency. */
@@ -235,30 +235,53 @@
 +    uint8_t id[2],state=0,c[8];
 +    if (read_registers(&pon,4,id,2) && id[0]==1 && id[1]==9 &&
 +        read_registers(&pon,0x10,&state,1)) {
-+        /* Only the PON pwrkey is a PON status bit. Android's own DT binds
-+         * KEY_VOLUMEUP to TLMM GPIO6 and KEY_VOLUMEDOWN to the PMIC resin IRQ,
-+         * so reading 0x40 here made both volume keys dead. */
++        /* PON status byte: bit7 = KPDPWR, bit6 = RESIN. The power key is
++         * verified on this exact register, and Android's resin key is the
++         * PMK8350 PON resin wired to this same PON peripheral, so bit6 is
++         * volume down. Volume UP is not here: Android binds it to the
++         * PM8350 SPMI GPIO6 (active low). */
 +        keys[0].usable=true;
 +        keys[0].last=(state&0x80)!=0;
++        keys[2].usable=true;
++        keys[2].last=(state&0x40)!=0;
 +    }
-+    /* Volume keys are NOT PON status bits. Android binds KEY_VOLUMEUP to the
-+     * PM8350 SPMI GPIO6 (active low) and KEY_VOLUMEDOWN to the PMK8350 resin
-+     * interrupt, so publishing them from 0x40 fabricated false presses. They
-+     * stay unpublished until their own peripherals are implemented. */
++    /* The spare peripheral id (0x18d) is the PM8350 GPIO block carrying the
++     * volume-up key, per Android's binding gpios=<0x57b 6 1> (PM8350 GPIO6,
++     * active low). Its register 0x10 bit0 is the pin state. */
++    if (read_registers(&pin,4,id,2) && id[0]==0x10 && id[1]>=0x10 && id[1]<=0x13 &&
++        read_registers(&pin,0x10,&state,1)) {
++        keys[1].usable=true;
++        keys[1].last=(state&1)==0;
++    }
 +    if (!keys[0].usable || !pong_buttons_device_ready()) {
 +        printf("Pong keys: no verified input peripheral; SKIP\n");goto out;
 +    }
 +    for (unsigned i=0;i<3;i++) keys[i].live=keys[i].usable && !keys[i].last;
-+    printf("Pong keys: arbiter v%u channels=%u PON=%u; power=%u up=%u down=%u\n",
-+        v7?7:5,channels,pon.channel,keys[0].usable,keys[1].usable,keys[2].usable);
++    printf("Pong keys: arbiter v%u channels=%u PON=%u GPIO=%u; power=%u up=%u down=%u\n",
++        v7?7:5,channels,pon.channel,pin.channel,keys[0].usable,keys[1].usable,keys[2].usable);
++    /* One raw read of both sources so the actual bit values are visible even
++     * when a key never fires. */
++    {
++        uint8_t ps=0,g=0;
++        bool ok1=read_registers(&pon,0x10,&ps,1);
++        bool ok2=read_registers(&pin,0x10,&g,1);
++        printf("Pong keys: raw PON=%s%02x GPIO=%s%02x\n",ok1?"":"?",ok1?ps:0,ok2?"":"?",ok2?g:0);
++    }
 +    unsigned failures=0;
 +    for (;;) {
 +        bool good=true;
 +        if (keys[0].usable) {
-+            if (read_registers(&pon,0x10,&state,1)) look(&keys[0],(state&0x80)!=0);
-+            else good=false;
++            if (read_registers(&pon,0x10,&state,1)) {
++                look(&keys[0],(state&0x80)!=0);
++                look(&keys[2],(state&0x40)!=0);
++            } else good=false;
 +        }
 +        failures=good?0:failures+1;
++        if (keys[1].usable) {
++            uint8_t gpio=0;
++            if (read_registers(&pin,0x10,&gpio,1)) look(&keys[1],(gpio&1)==0);
++            else good=false;
++        }
 +        if (failures>=8) {
 +            for (unsigned i=0;i<3;i++) if (keys[i].down)
 +                pong_touch_post(PONG_BUTTON_UP,keys[i].code,0,0);
