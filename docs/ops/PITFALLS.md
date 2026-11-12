@@ -1136,6 +1136,7 @@ DYLD_FALLBACK_LIBRARY_PATH=/usr/lib
 - **修复**：在原生主队列初始亮屏后，保留已有图片/颜色/动态壁纸，仅对确认为空的配置选择完整的真实 7410 WWDC 2022 bundle。使用原始 `WKWallpaperBundle initWithURL:` 和 `WKSystemShellWallpaperManager setLockScreenWallpaperRepresenting:mirrorToHomeScreen:completion:`，不改文件名、筛选谓词或认证状态。
 - **调试证据**：`kern.pong_diagnostic` 现复用于 SpringBoard/backboard，输出实际 homeButtonType、现有内容、HEIC 文件验证与原生提交。setter completion ABI 是 void()，回调返回不能当成像素成功。源码/API/真实资产依据记录在 `work/touch-gpu/wallpaper-native20G81.json`。
 - **检查**：下一版必须实际显示素材；`existing-content=-1`、文件缺失或 ABI 不符都明确报未实现前提，不伪造成功。COM8 已实测收到 13300 字节并返回 help；这是 CDC 诊断通道，不是 LLDB/Apple usbmux。
+- **cand18 实证**：`console-20261112-115737.log` 78716B，真实 `K60UI` 日志显示 `locked=1 homeButtonType=2`、`existing-content=1`，因此原生设置未提交。`k60_wallpaper_reset=1` 仅供本次恢复镜像显式重新选择真实 stock；默认不替换已有内容。新日志列出 lock/home 配置属性与对象类，既不把已有配置当作像素证明，也不把 callback 返回当成功。
 
 ## 台账维护规则
 
