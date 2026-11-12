@@ -622,3 +622,21 @@ python3 - <<'PY' … d[552960:552960+201326592] = new_payload … PY
 ## 附：一句话回答
 
 **能开，但不是“改一行 0231”**：当前 defconfig 已经把 PongAdreno 链进来并让 `XNU_K60_ACCEL_STUB=0`；三个 scanout 补丁与其两处 rebase 已经就位（见 ⑦），本轮补上的是 `pong_adreno_start=1` 与让 R1 判定可见的 `K60FB` 复报。最大风险仍是 **R1：framebuffer 在 XNU managed range 内时，GPU DMA 与 VM 抢同一批页**；`K60FB … -> INSIDE` 是硬停止条件，所以阶段 A 只启动 GPU、不交接 framebuffer。
+
+### 7.5 R1 为什么必须上机（离线已排查完）
+
+`K60 FB` 判定需要两个数，一个已测、一个测不到：
+
+| 数 | 来源 | 离线可得？ |
+|---|---|---|
+| managed 窗口 | loader 的 `owned_memory_size`（`board.toml` = `0x130000000`）→ `boot_args->memSize` → `arm_vm_init` | 是。板上 `K60RV` 已报 `mem=4864 actual=4864 managed=4864`，即 4.75 GiB 窗口全部进入 VM |
+| framebuffer 物理基址 | UEFI GOP `Mode->FrameBufferBase`（`BootVideo.h:33`），由 ABL 决定 | **否** |
+
+已排查、确认取不到的途径：
+
+- DTB：`hardware.dtb` 只有 `memory@900000000 reg = <0x09 0x00 0x01 0x40000000>`，没有 framebuffer 节点；
+- payload toml：只有 `darwinboot-memory-size`，没有视频基址；
+- 现有串口日志：E: 盘全部 `console-*.log` 里没有 GOP 基址，`MiniIOMobileFramebuffer` 也不打印 `v_baseaddr`；
+- `arm_vm_init` 的 `K60 FB:` 行本身就在串口可用之前打印，物理上收不到。
+
+所以这一项**只能靠板上运行** `boot-gpuA-20261112.img` 后读 `K60FB` 行，这也是把判定改接到 `K60RV` 通道的原因。
