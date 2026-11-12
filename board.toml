@@ -228,8 +228,8 @@ trust_cache_sha256 = []
 
 # K60 has only side/volume keys. This is the native MobileGestalt/BSPlatform
 # contract, not a synthetic Home key or a lock-screen text override:
-# core/docs/guide/mobilegestalt.md:26-44; original20G81 BaseBoard BSPlatform
-# homeButtonType (0x18dcc5dcc) maps Gestalt HomeButtonType=2 to platform type2.
+# core/docs/guide/mobilegestalt.md:26-44 defines native HomeButtonType=2.
+# Verify the actual 20G81 consumer through the runtime homeButtonType log.
 # The format2 generator emits /buttons from this typed table. Real digitizer
 # events remain responsible for the bottom-edge swipe and normal authentication.
 [adt.buttons.string]
