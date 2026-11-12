@@ -187,6 +187,13 @@ kernel_args = [
   # dropped to stay inside the 608-byte arm64 boot-args limit; SpringBoard's own
   # os_log output is unaffected.
   "k60_touch_se=6",
+  # Adreno stage A (docs/plans/GPU-ENABLE-PLAN.md 4.4): start the GPU and report
+  # every stage, but do not hand the framebuffer over yet. pong_gpu_scanout and
+  # pong_gpu_only stay unset until the K60FB line below proves the boot
+  # framebuffer is outside the VM's managed range; a GPU DMA into pages the VM
+  # also hands out corrupts page tables rather than merely failing to present.
+  # The whole list is 594 of the 608 bytes arm64 boot-args allow.
+  "pong_adreno_start=1",
 ]
 # All eight CPUs. The AppleARMCPU device-tree validation that required a
 # single-CPU ADT is bypassed by the kext patch on _validateConfiguration, and the
