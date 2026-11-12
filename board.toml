@@ -174,7 +174,7 @@ kernel_args = [
   "-v", "native-ufs=1", "pong_allow_unauthenticated_root=1", "debug=0x140",
   "cs_enforcement_disable=1", "pong_software_keybag=1", "disable_exc_resource=1",
   "pong_ufs_readwrite=1", "k60_console_export=1", "k60_usblog=2",
-  "pong_data_mount=1", "pong_data_rw=1", "fb_threads=3", "k60_textonly=1",
+  "pong_data_mount=1", "pong_data_rw=1", "fb_threads=3",
   "amfi_get_out_of_my_way=1", "pong_init_path=/private/var/pong/init",
   "epoch=1793709100", "k60_fontscale=3", "k60_skip_firmware_mount=1",
   "k60_tolerate_cache_loader=1", "launchd_unsecure_cache=1",
@@ -187,13 +187,18 @@ kernel_args = [
   # dropped to stay inside the 608-byte arm64 boot-args limit; SpringBoard's own
   # os_log output is unaffected.
   "k60_touch_se=6",
-  # Adreno stage A (docs/plans/GPU-ENABLE-PLAN.md 4.4): start the GPU and report
-  # every stage, but do not hand the framebuffer over yet. pong_gpu_scanout and
-  # pong_gpu_only stay unset until the K60FB line below proves the boot
-  # framebuffer is outside the VM's managed range; a GPU DMA into pages the VM
-  # also hands out corrupts page tables rather than merely failing to present.
-  # The whole list is 594 of the 608 bytes arm64 boot-args allow.
-  "pong_adreno_start=1",
+  # Adreno stage B (docs/plans/GPU-ENABLE-PLAN.md 4.4). Stage A ran on the board
+  # on 2026-11-12 and reported result=0 for all 22 steps, from parent ARC votes
+  # through CP/user-client startup, with no SKIP and no FAIL. The R1 gate that
+  # held scanout back is cleared by measurement: K60FB reports base=0xb8000000
+  # end=0xb9194000 -> outside managed range, so the ABL framebuffer is not in the
+  # pages the VM hands out. pong_gpu_scanout therefore turns the handoff on while
+  # CPU composition stays available as the fallback; pong_gpu_only stays unset
+  # until the GPU copy itself is proven to complete.
+  # k60_textonly left this list with stage B: with it set, drawLayer() never runs
+  # and the panel stays the kernel text console, which is the opposite of a GPU
+  # handoff. The whole list is 597 of the 608 bytes arm64 boot-args allow.
+  "pong_adreno_start=1", "pong_gpu_scanout=1",
 ]
 # All eight CPUs. The AppleARMCPU device-tree validation that required a
 # single-CPU ADT is bypassed by the kext patch on _validateConfiguration, and the

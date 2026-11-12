@@ -623,7 +623,46 @@ python3 - <<'PY' … d[552960:552960+201326592] = new_payload … PY
 
 **能开，但不是“改一行 0231”**：当前 defconfig 已经把 PongAdreno 链进来并让 `XNU_K60_ACCEL_STUB=0`；三个 scanout 补丁与其两处 rebase 已经就位（见 ⑦），本轮补上的是 `pong_adreno_start=1` 与让 R1 判定可见的 `K60FB` 复报。最大风险仍是 **R1：framebuffer 在 XNU managed range 内时，GPU DMA 与 VM 抢同一批页**；`K60FB … -> INSIDE` 是硬停止条件，所以阶段 A 只启动 GPU、不交接 framebuffer。
 
-### 7.5 R1 为什么必须上机（离线已排查完）
+### 7.5a 阶段 A 已在硬件上全部通过（2026-11-12 21:16）
+
+`boot-gpuA-20261112.img`（`pong_adreno_start=1`，602 字节 boot-args）一次性跑完
+22 步，**每一步都是 `result=0`，没有一条 SKIP，没有一条 FAIL**
+（`E:\k60-ios\work\cap\console-20261112-211647.log:480-521`）：
+
+| 阶段 | 日志 |
+|---|---|
+| 入口 | `startup requested; no accelerator published` |
+| 电源 | `parent ARC votes acknowledged a=0x8 b=0x9`、`CX clocks`、`Cape GPU PLL configuration` |
+| SMMU | `GPU SMMU actual IDs result=0 a=0x4c017e1840000016 b=0x5511` |
+| GMU | `GMU native4K context`、`GMU firmware/HFI result=0 a=0x1f98000000001 b=0x4`、`GMU power handshake` |
+| BO/固件 | `native BO pool a=0x10000000`（256 MiB 一次分到）、`GPU native4K/SQE prepared`、`LPAC native4K shared context` |
+| CP | `Pong CP_ME_INIT bootstrap submitted` → `CP ME_INIT drained` → `PAS13 ZAP auth` → `CP nonsecure switch drained` → `CP fence a=0x1 b=0x1` → `GPU IRQ332 owner` |
+| 完成 | `CP ready; authenticated nonsecure fence result=0 a=0x1 b=0xa7b625`、`CP/user-client startup result=0 a=0x40000007 b=0x20010000` |
+
+这同时否掉了计划里三个“未核实”：
+
+- **R3（GPU 是否 cold）不成立**：没有 `SKIP GX already powered`，ABL 没有提前给 GPU 上电；
+- **R4（SMMU 路由）不成立**：`GPU SMMU actual IDs` 读到 `0x4c017e1840000016`/`0x5511`，没有 `SKIP ASID lease conflicts`；K60 的 SID 路由与 Pong 一致；
+- **R5（固件/ZAP 认证）不成立**：`PAS13 ZAP auth result=0`；
+- **BO 池**一次拿到 256 MiB（`a=0x10000000`），未触发减半。
+
+同一份日志里 `K60FB base=0xb8000000 end=0xb9194000 -> outside managed range`，
+即 7.5 的 R1 结论在阶段 A 的镜像上再次复现。
+
+### 7.5 R1 结论：已在硬件上通过（2026-11-12 20:38）
+
+```
+K60FB base=0xb8000000 end=0xb9194000 -> outside managed range
+```
+
+managed 窗口自 `physBase 0x900000000` 起 4864 MiB（`K60RV` 同时报
+`mem=4864 actual=4864 managed=4864`），framebuffer 在 2.875 GiB，**确实在外面**。
+所以 R1（GPU DMA 与 VM 抢同一批页）在本板不成立，`pong_gpu_scanout=1` 的前提已满足。
+
+这条结果是靠把判定接到 `K60RV` 帧统计通道才读到的：原始 `K60 FB:` 行在
+`arm_vm_init` 里、串口可用之前打印，永远收不到（见下）。
+
+### 7.6 R1 为什么原本必须上机（离线排查记录）
 
 `K60 FB` 判定需要两个数，一个已测、一个测不到：
 
