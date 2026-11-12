@@ -1,18 +1,3 @@
-# XNU patch series for the K60 (mondrian) kernel, in application order.
-#
-# This is the set the format-1 build applied to xnu-8796.141.3 through the glob in
-# scripts/build-xnu-4k-baseline.sh, recorded from the qualified run 40631225483 so the
-# format-2 resolver applies exactly the same patches in the same order. It is also
-# byte-identical to the set the 16.6.1 storm-era images used (commit 99eeba9).
-#
-# HISTORY: at e5f23c4 this file was cut to the 62 patches that apply to xnu-10063 for
-# route-a-17 (17.7.11 / BCM2837), and that 64-entry set survived into route-a-18. It
-# drops 56 patches that the 16.6.1 route needs - among them the whole HackiOS userland
-# ABI (miniamfi, MiniIOSurface, MiniIOMobileFramebuffer), the elite Sandbox policy,
-# the watchdog shutdown and the runtime directories. Building 16.6.1 from that set
-# produces a kernel that is 56 patches poorer than the one the sig=9 storm was
-# observed on. This file is restored to the 120-patch set; series.16-full keeps the
-# same list as the reference copy.
 apple-only-cpu-tunables.patch
 architectural-timer-entry.patch
 armvirt-platform-personality.patch
@@ -195,3 +180,37 @@ zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-k60-quiet-wakes.patch
 0364-k60-deny-without-release.patch
 0365-k60-ui-owns-screen.patch
 0366-k60-userexc-pid.patch
+0367-k60-userexc-sp-fp.patch
+0373-k60-dyld-payload.patch
+0384-k60-pid-hibernate.patch
+0385-k60-aks-datamigrator.patch
+0386-k60-quiet-exec-probes.patch
+0387-k60-panic-args.patch
+0388-k60-n4k-cache-io.patch
+0389-k60-kx-pc-lr.patch
+0390-k60-cryptex-app-access.patch
+0392-k60-dyld-cache-probe.patch
+0394-k60-launchd-cache.patch
+0395-k60-panel-call.patch
+zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-pong-gpu-scanout.patch
+zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-pong-gpu-only-display.patch
+zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-pong-source-row-pitch.patch
+zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-pong-touch-console.patch
+zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-pong-physical-keys.patch
+0334b-k60-autoreset.patch
+0500-k60-bt-qbt-new-files.patch
+0502b-k60-bt-qbt-kernel-stubs.patch
+0501-k60-bt-qbt-bsd-conf.patch
+0502-k60-bt-qbt-bsd-init.patch
+0503-k60-audio-aw882xx.patch
+0504-k60-audio-pong-audio.patch
+0505-k60-audio-integration.patch
+0506-k60-120hz-refresh.patch
+0399-k60-shared-cache-root-layout.patch
+0402-k60-shared-cache-root-union.patch
+0400-k60-pid26-slide.patch
+0401-k60-embedded-init.patch
+0398-k60-pong-runtime-directories.patch
+0600-k60-display-composition.patch
+0602-k60-physical-battery.patch
+0603-k60-ui-diagnostic.patch

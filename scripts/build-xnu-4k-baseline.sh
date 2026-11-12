@@ -206,9 +206,17 @@ if [ ! -d refer/libplatform/.git ]; then
 fi
 export KERNEL_SDKROOT=$ROOT/.cache/fakeroot
 mkdir -p "$KERNEL_SDKROOT/usr/local/include/kernel" "$ROOT/build/xnu/obj/EXPORT_HDRS/libsa"
-ditto refer/libplatform/include "$KERNEL_SDKROOT/usr/local/include"
-ditto refer/libplatform/private "$KERNEL_SDKROOT/usr/local/include"
-ditto refer/libplatform/private/platform "$KERNEL_SDKROOT/System/Library/Frameworks/Kernel.framework/Versions/A/PrivateHeaders/platform"
+# ditto(1) is a macOS tool that merges directory trees. GNU cp has no merge mode,
+# so on Linux use the same "copy over, keep both" semantics with cp -R.
+if command -v ditto >/dev/null 2>&1; then
+  DITTO=ditto
+else
+  DITTO_FALLBACK() { mkdir -p "$2" && cp -R "$1/." "$2/"; }
+fi
+ditto_or_copy() { if [ "${DITTO:-}" = ditto ]; then ditto "$1" "$2"; else DITTO_FALLBACK "$1" "$2"; fi; }
+ditto_or_copy refer/libplatform/include "$KERNEL_SDKROOT/usr/local/include"
+ditto_or_copy refer/libplatform/private "$KERNEL_SDKROOT/usr/local/include"
+ditto_or_copy refer/libplatform/private/platform "$KERNEL_SDKROOT/System/Library/Frameworks/Kernel.framework/Versions/A/PrivateHeaders/platform"
 if [ ! -d refer/libdispatch/.git ]; then
   git clone --depth 1 --branch "$LIBDISPATCH_TAG" https://github.com/apple-oss-distributions/libdispatch.git refer/libdispatch
 fi
@@ -230,21 +238,97 @@ PY
 if [ ! -f "$KERNEL_SDKROOT/.xnu-$XNU_VERSION-headers" ] || \
    [ .cache/xnu-work/pexpert/pexpert/arm64/board_config.h -nt "$KERNEL_SDKROOT/.xnu-$XNU_VERSION-headers" ] || \
    [ .cache/xnu-work/pexpert/pexpert/arm64/PONG.h -nt "$KERNEL_SDKROOT/.xnu-$XNU_VERSION-headers" ]; then
+  # MakeInc.top derives the host figures from /usr/sbin/sysctl and sw_vers, which
+  # do not exist (or mean something else) on Linux. The SETUP tools also need the
+  # host deployment target: without it their Makefiles pass an empty
+  # -mmacosx-version-min and clang refuses to compile them.
   make -C .cache/xnu-work installhdrs SDKROOT=macosx ARCH_CONFIGS=ARM64 \
     MACHINE_CONFIGS=PONG KERNEL_CONFIGS=DEVELOPMENT \
     RC_DARWIN_KERNEL_VERSION="$XNU_DARWIN" RC_ProjectSourceVersion="$XNU_VERSION" \
     MAKEJOBS=-j"${JOBS:-4}" OBJROOT="$ROOT/build/xnu/obj" \
-    SYMROOT="$ROOT/build/xnu/sym" DSTROOT="$KERNEL_SDKROOT"
+    SYMROOT="$ROOT/build/xnu/sym" DSTROOT="$KERNEL_SDKROOT" \
+    MEMORY_SIZE="$(awk '/MemTotal/ {print $2 * 1024}' /proc/meminfo)" \
+    SYSCTL_HW_PHYSICALCPU="$(nproc)" \
+    SYSCTL_HW_LOGICALCPU="$(nproc)" \
+    HOST_CC="${CLT_PREFIX:-/opt/unixnu-linux/CommandLineTools/usr}/bin/xnu-host-cc" \
+    HOST_OS_VERSION="${HOST_OS_VERSION:-14.6}"
   touch "$KERNEL_SDKROOT/.xnu-$XNU_VERSION-headers"
 fi
-if [ -n "${PONG_NATIVE_DRIVER_SOURCE:-}" ] && [ -d "$PONG_NATIVE_DRIVER_SOURCE/shim-bin" ]; then
+# The Pong provider scripts that this script runs (build-pong-platform-macos.py,
+# build-pong-armcpu-macos.py, derive-ios16-storage-bindings.py,
+# build-pong-ufs-probe-macos.py, build-pong-ram-block-macos.py,
+# build-pong-adreno-platform.py, bind-ios16-storage.py) live in this repository
+# under scripts/, and the sources they compile live under drivers/. The assembled
+# $ROOT does not have them: it only links the components that [components] selects,
+# so $ROOT/drivers/PongAdreno does not exist and the Adreno step stops on
+# PongAdrenoCpProfile.h. The scripts are copied into $ROOT/scripts, and the device
+# repository is reachable through the tree's own links: patches/xnu is a symlink
+# into the device checkout, so realpath(patches/xnu/../..) is that checkout.
+# Resolve it, keep an explicit PONG_NATIVE_DRIVER_SOURCE if one is already set, and
+# let the Adreno step use the Linux variant of the recipe when the macOS one is the
+# only thing there (it pins /Volumes/PongDev and needs Xcode). shim-bin is also
+# missing from this repository; the block below derives the c++filt wrapper from
+# the host demangler instead of shipping a copy of it.
+if [ -z "${PONG_NATIVE_DRIVER_SOURCE:-}" ]; then
+  # realpath(1) is not on every host; the build already requires python3.
+  PONG_DEVICE_CHECKOUT=$(python3 - "$ROOT" <<'PY_DRIVER_SOURCE'
+import os
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+for link in ('patches/xnu', 'kits/mondrian', 'package'):
+    resolved = Path(os.path.realpath(root / link))
+    # patches/xnu is <checkout>/patches/xnu; kits/<kit> and package are the
+    # checkout's own package/ directory.
+    if resolved.name == 'xnu' and resolved.parent.name == 'patches':
+        candidate = resolved.parents[1]
+    elif resolved.name == 'package':
+        candidate = resolved.parent
+    else:
+        candidate = resolved
+    if (candidate / 'drivers/PongAdreno').is_dir():
+        print(candidate)
+        break
+PY_DRIVER_SOURCE
+  )
+  if [ -n "$PONG_DEVICE_CHECKOUT" ]; then
+    PONG_NATIVE_DRIVER_SOURCE=$PONG_DEVICE_CHECKOUT
+    echo "PONG_NATIVE_DRIVER_SOURCE=${PONG_NATIVE_DRIVER_SOURCE} (derived from the build tree)" >&2
+  else
+    echo 'PONG_NATIVE_DRIVER_SOURCE is unset and the device checkout could not be located; the ArmDT/ArmCpu/NativeUfs archives will be skipped and the link will stop on their files' >&2
+  fi
+fi
+if [ -n "${PONG_NATIVE_DRIVER_SOURCE:-}" ]; then
+  export PONG_NATIVE_DRIVER_SOURCE
+fi
+PONG_DRIVER_SHIM_BIN=
+if [ -d "${PONG_NATIVE_DRIVER_SOURCE:-}/shim-bin" ]; then
+  PONG_DRIVER_SHIM_BIN=$PONG_NATIVE_DRIVER_SOURCE/shim-bin
+elif [ -n "${PONG_NATIVE_DRIVER_SOURCE:-}" ]; then
+  # Apple's c++filt strips the Mach-O leading underscore itself, GNU's needs `-_`.
+  # Derive the wrapper from the host demangler instead of shipping a copy.
+  DEMANGLE=$(command -v c++filt || true)
+  if [ -n "$DEMANGLE" ]; then
+    PONG_DRIVER_SHIM_BIN=$ROOT/build/pong-shim-bin
+    mkdir -p "$PONG_DRIVER_SHIM_BIN"
+    printf '%s\n' \
+      '#!/bin/sh' \
+      '# Apple c++filt strips the Mach-O leading underscore before demangling (GNU needs -_).' \
+      "exec $DEMANGLE -_ \"\$@\"" > "$PONG_DRIVER_SHIM_BIN/c++filt"
+    chmod +x "$PONG_DRIVER_SHIM_BIN/c++filt"
+    echo "shim-bin (c++filt -_) derived at $PONG_DRIVER_SHIM_BIN" >&2
+  else
+    echo 'WARNING: no c++filt on the host; the storage symbol demangling will fail' >&2
+  fi
+fi
+if [ -n "${PONG_DRIVER_SHIM_BIN:-}" ] && [ -d "$PONG_DRIVER_SHIM_BIN" ]; then
   # The driver scripts call `xcrun c++filt`, and the Linux xcrun shim passes
   # unknown tools straight through to the host binary. GNU c++filt needs `-_`
   # to strip the Mach-O leading underscore before demangling, which Apple's
   # does by itself; without it bind-ios16-storage.py reports
   # "Undecoded method: __ZNK12PongUfsBlock12getMetaClassEv" and stops the UFS
-  # step. That project ships the wrapper for exactly this; put it first.
-  PATH="$PONG_NATIVE_DRIVER_SOURCE/shim-bin:$PATH"
+  # step. Put the wrapper first.
+  PATH="$PONG_DRIVER_SHIM_BIN:$PATH"
   export PATH
 fi
 if [ "${XNU_ARM_DT_PLATFORM:-0}" = 1 ] && [ -n "${PONG_NATIVE_DRIVER_SOURCE:-}" ]; then
@@ -354,6 +438,7 @@ fi
 if [ "$NATIVE_VIRTIO_CONSOLE" = 1 ]; then
   PERSONALITY_CFLAGS="$PERSONALITY_CFLAGS -DXNU_NATIVE_VIRTIO_CONSOLE=1"
 fi
+
 EXTRA_MAKE_ARGS+=("KernelConfigTables.cpo_CFLAGS_ADD=$PERSONALITY_CFLAGS")
 TRUST_CACHE_MODE=${XNU_TRUST_CACHE_RUNTIME:-0}
 if [ "$TRUST_CACHE_MODE" != 0 ] && [ "$TRUST_CACHE_MODE" != 1 ]; then
@@ -488,7 +573,7 @@ if [ "$(cat "$SHENG_PMGR_STAMP" 2>/dev/null || echo 0)" != "$SHENG_PMGR" ]; then
   rm -f "$ROOT/build/xnu/ios-obj/DEVELOPMENT_ARM64_PONG/bsd/DEVELOPMENT/bsd_init.o"
   printf '%s\n' "$SHENG_PMGR" > "$SHENG_PMGR_STAMP"
 fi
-EXTRA_MAKE_ARGS+=("bsd_init.o_CFLAGS_ADD=-DXNU_SHENG_PMGR=$SHENG_PMGR -DXNU_VERIFIED_ROOT_PROBE=$OWNER_ROOT_PROBE -DXNU_OWNER_ROOT_AUDIT=$OWNER_ROOT_AUDIT -DXNU_OWNER_ROOT_TRUST=$OWNER_ROOT_TRUST -DXNU_ADRENO_FIRMWARE_PROBE=$ADRENO_FIRMWARE_PROBE -DXNU_ADRENO_PM4_PROBE=$ADRENO_PM4_PROBE -DXNU_SMMU4K_PROBE=$SMMU4K_PROBE -DXNU_CONSTANT_UPLOADS_PROBE=$CONSTANT_UPLOADS_PROBE -DXNU_NATIVE_LEGACY_DISPLAY=${XNU_NATIVE_LEGACY_DISPLAY:-0} -DXNU_NATIVE_OFFLINE_GPU=$NATIVE_OFFLINE_GPU")
+EXTRA_MAKE_ARGS+=("bsd_init.o_CFLAGS_ADD=-DXNU_K60_PHYSICAL_BATTERY=${XNU_K60_PHYSICAL_BATTERY:-0} -DXNU_SHENG_PMGR=$SHENG_PMGR -DXNU_VERIFIED_ROOT_PROBE=$OWNER_ROOT_PROBE -DXNU_OWNER_ROOT_AUDIT=$OWNER_ROOT_AUDIT -DXNU_OWNER_ROOT_TRUST=$OWNER_ROOT_TRUST -DXNU_ADRENO_FIRMWARE_PROBE=$ADRENO_FIRMWARE_PROBE -DXNU_ADRENO_PM4_PROBE=$ADRENO_PM4_PROBE -DXNU_SMMU4K_PROBE=$SMMU4K_PROBE -DXNU_CONSTANT_UPLOADS_PROBE=$CONSTANT_UPLOADS_PROBE -DXNU_NATIVE_LEGACY_DISPLAY=${XNU_NATIVE_LEGACY_DISPLAY:-0} -DXNU_NATIVE_OFFLINE_GPU=$NATIVE_OFFLINE_GPU")
 NATIVE_MOBILE_DISPLAY=${XNU_NATIVE_MOBILE_DISPLAY:-0}
 if [ "$NATIVE_MOBILE_DISPLAY" != 0 ] && [ "$NATIVE_MOBILE_DISPLAY" != 1 ]; then
   echo 'XNU_NATIVE_MOBILE_DISPLAY must be 0 or 1' >&2
@@ -537,7 +622,7 @@ if [ "$OWNER_BOOT_MANIFEST" = 1 ] && [ "$OWNER_CACHE_STARTUP" != 1 ]; then
   echo 'Owner boot metadata requires real authenticated owner root/cache startup' >&2
   exit 1
 fi
-EXTRA_MAKE_ARGS+=("IOKitBSDInit.cpo_CFLAGS_ADD=-DXNU_OWNER_BOOT_MANIFEST=$OWNER_BOOT_MANIFEST")
+EXTRA_MAKE_ARGS+=("IOKitBSDInit.cpo_CFLAGS_ADD=-DXNU_K60_PHYSICAL_BATTERY=${XNU_K60_PHYSICAL_BATTERY:-0} -DXNU_OWNER_BOOT_MANIFEST=$OWNER_BOOT_MANIFEST")
 OWNER_MANIFEST_STAMP=$ROOT/build/xnu/ios-obj/DEVELOPMENT_ARM64_PONG/.owner-boot-manifest-mode
 if [ "$(cat "$OWNER_MANIFEST_STAMP" 2>/dev/null || echo 0)" != "$OWNER_BOOT_MANIFEST" ]; then
   rm -f "$ROOT/build/xnu/ios-obj/DEVELOPMENT_ARM64_PONG/iokit/DEVELOPMENT/IOKitBSDInit.cpo"
@@ -567,7 +652,13 @@ if [ "$OWNER_DATA_MOUNT" = 1 ] && [ "$OWNER_BOOT_MANIFEST" != 1 ]; then
   fi
 fi
 OWNER_DATA_HEADER=$ROOT/build/xnu/owner-data-volume.h
-python3 - "$OWNER_DATA_HEADER" "$OWNER_DATA_MOUNT" "$NATIVE_RAM_BLOCK" "${XNU_OWNER_DATA_VOLUME_UUID:-}" "${XNU_OWNER_CACHE_VOLUME_UUID:-}" <<'PY_DATA_UUID'
+# The header carries the SystemOS volume UUID of the OS a kernel was built for,
+# and the patch that reads it refuses to compile without the macro. The value is
+# therefore taken from the build configuration (CONFIG_XNU_OWNER_CACHE_VOLUME_UUID
+# of the defconfig, which unixnu exports as XNU_OWNER_CACHE_VOLUME_UUID) and
+# checked before the build starts instead of raising a bare SystemExit with the
+# patched source as the only trace. It may also be forced through the environment.
+python3 - "$OWNER_DATA_HEADER" "$OWNER_DATA_MOUNT" "$NATIVE_RAM_BLOCK" "${XNU_OWNER_DATA_VOLUME_UUID:-}" "${XNU_OWNER_CACHE_VOLUME_UUID:-}" "${XNU_OWNER_CACHE_VOLUME_UUID_SOURCE:-}" <<'PY_DATA_UUID'
 from pathlib import Path
 import sys
 import uuid
@@ -577,12 +668,46 @@ if sys.argv[2] == '1':
     try:
         value = str(uuid.UUID(sys.argv[4])).upper()
     except ValueError:
-        raise SystemExit('Set XNU_OWNER_DATA_VOLUME_UUID to the actual observed scratch APFS volume UUID')
+        raise SystemExit(
+            'XNU_OWNER_DATA_VOLUME_UUID is required when XNU_OWNER_DATA_MOUNT=1 '
+            '(CONFIG_XNU_OWNER_DATA_VOLUME_UUID="..." in the selected defconfig) and must be '
+            'the APFS volume UUID of the scratch Data volume observed on the board. '
+            'The value in the defconfig is a captured one; set the variable to the volume '
+            'this kernel has to mount. Received: ' + repr(sys.argv[4]))
     text = '#define XNU_OWNER_DATA_VOLUME_UUID "' + value + '"\n'
+    # The committed scratch Data seed must carry the UUID we are about to bake in.
+    # Otherwise the build passes (payload.py only copies the seed) and the kernel
+    # fails to find its Data volume on device, far away from this line.
+    _seed = Path(__file__).resolve().parents[1] / 'seed' / 'k60-data-seed.dbr'
+    if _seed.is_file():
+        _raw = _seed.read_bytes()
+        _want = uuid.UUID(value).bytes
+        if _want not in _raw:
+            raise SystemExit(
+                'SEED_DATA_VOLUME_UUID mismatch: configs/mondrian_defconfig bakes in '
+                + value + ' but seed/k60-data-seed.dbr does not contain that UUID.\n'
+                'The build would succeed and the device would fail much later, so this is '
+                'checked here. Fix one of them:\n'
+                '  * CONFIG_XNU_OWNER_DATA_VOLUME_UUID="<uuid of the committed seed>"\n'
+                '  * or replace seed/k60-data-seed.dbr with a seed carrying this UUID.\n'
+                'Read the seed\'s UUID with:\n'
+                '  python3 -c "import io,re;d=io.open(\'seed/k60-data-seed.dbr\',\'rb\').read();'
+                'print(d.find(bytes.fromhex(\'<uuid, no dashes>\')))"')
+
 try:
     cache = str(uuid.UUID(sys.argv[5])).upper()
 except ValueError:
-    raise SystemExit('Set XNU_OWNER_CACHE_VOLUME_UUID to the observed Pong SystemOS APFS UUID')
+    raise SystemExit(
+        'XNU_OWNER_CACHE_VOLUME_UUID is required: the offline SystemOS mount patch '
+        '(patches/xnu/offline-owner-systemos-mount.patch) reads the SystemOS volume UUID '
+        'through this macro and refuses to compile without it.\n'
+        'Fix one of these and rebuild:\n'
+        '  * set CONFIG_XNU_OWNER_CACHE_VOLUME_UUID="<UUID>" in configs/mondrian_defconfig\n'
+        '    (the 20G81 SystemOS volume is 15B507FA-21B7-4EE5-B55D-0F3445DE0752, recorded in '
+        'docs/reference/PITFALLS-FROM-HISTORY.md pitfall 91);\n'
+        '  * or export XNU_OWNER_CACHE_VOLUME_UUID=<UUID> for this run;\n'
+        '  * or add "systemos_volume_uuid" under [root] of the selected OS profile.\n'
+        'Received: ' + repr(sys.argv[5]) + ' (from ' + (sys.argv[6] or 'the environment') + ')')
 text += '#define XNU_OWNER_CACHE_VOLUME_UUID "' + cache + '"\n'
 path.parent.mkdir(parents=True, exist_ok=True)
 if not path.exists() or path.read_text() != text:
@@ -968,8 +1093,38 @@ if [ "$PONG_ADRENO_PLATFORM" = 1 ]; then
   # IOAcceleratorES initializer runs only after20G81 IOGPUFamily loads.
   # Keep foreign A740/Redwood hardware owners disabled independently.
   PONG_DRIVER_SOURCE=${PONG_NATIVE_DRIVER_SOURCE:-$ROOT}
-  python3 "$PONG_DRIVER_SOURCE/scripts/build-pong-adreno-platform.py" \
+  # The macOS recipe pins /Volumes/PongDev and needs Xcode (its --tree and
+  # --firmware-dir defaults, and xcrun --sdk iphoneos). This repository carries
+  # the Linux port next to it, which reads $UNIXNU_SDKROOT and the host toolchain
+  # shim instead; prefer it whenever the macOS one cannot be used here.
+  PONG_ADRENO_SCRIPT=$PONG_DRIVER_SOURCE/scripts/build-pong-adreno-platform.py
+  if [ "${PONG_HOST_LINUX:-}" != 0 ] && [ "$(uname -s)" = Linux ] && \
+     [ -f "$PONG_DRIVER_SOURCE/scripts/build-pong-adreno-platform-linux.py" ]; then
+    PONG_ADRENO_SCRIPT=$PONG_DRIVER_SOURCE/scripts/build-pong-adreno-platform-linux.py
+  fi
+  python3 "$PONG_ADRENO_SCRIPT" \
     --output-dir "$ROOT/build/pong-adreno"
+  # K60_GPU_BOOTSTRAP: the bootstrap link skips PLATFORM_ARCHIVES entirely
+  # (XNU_BOOTSTRAP is always set for PONG because its record name differs),
+  # so the scanout objects in this archive would be undefined there. Give the
+  # bootstrap pass its own LD_KERNEL_ARCHIVES with firehose + the archive; the
+  # real pass keeps using the full PLATFORM_ARCHIVES.
+  if [ -n "${XNU_BOOTSTRAP:-}" ]; then
+    PONG_GPU_ARCHIVE=$ROOT/build/pong-adreno/libPongAdrenoPlatform.a
+    test -f "$PONG_GPU_ARCHIVE"
+    BOOT_ARCHIVES="-L$KERNEL_SDKROOT/usr/local/lib/kernel -lfirehose_kernel $PONG_GPU_ARCHIVE"
+    # The bootstrap pass also links, and IOKitBSDInit references the battery
+    # entry point whenever the switch is on, so this pass needs the archive too.
+    if [ "${XNU_K60_PHYSICAL_BATTERY:-0}" = 1 ]; then
+      K60_BATTERY_ARCHIVE=${XNU_K60_PHYSICAL_BATTERY_ARCHIVE:-$ROOT/build/k60-physical-battery/libK60PhysicalBattery.a}
+      if [ ! -f "$K60_BATTERY_ARCHIVE" ]; then
+        echo "XNU_K60_PHYSICAL_BATTERY=1 but $K60_BATTERY_ARCHIVE is missing" >&2
+        exit 1
+      fi
+      BOOT_ARCHIVES="$BOOT_ARCHIVES -Wl,-force_load,$K60_BATTERY_ARCHIVE"
+    fi
+    EXTRA_MAKE_ARGS+=("LD_KERNEL_ARCHIVES=$BOOT_ARCHIVES")
+  fi
 fi
 if [ -z "${XNU_BOOTSTRAP:-}" ] && [ "$ARM_DT_PLATFORM" = 1 ] && [ "${XNU_SOURCE_CORECRYPTO14:-0}" != 1 ]; then
   ARM_DT_ARCHIVE=$ROOT/build/armdt-platform/libArmDTPlatform.a
@@ -1011,6 +1166,21 @@ PY_RAM_BLOCK_BINDINGS
       PLATFORM_ARCHIVES="$PLATFORM_ARCHIVES -Wl,-force_load,$RAM_BLOCK_ARCHIVE"
     fi
     PLATFORM_DEPENDENCIES="$PLATFORM_DEPENDENCIES $RAM_BLOCK_ARCHIVE"
+  fi
+  # K60 PMIC-GLINK/IOPMPowerSource. XNU_BOOTSTRAP is set only for the first
+  # pass; this branch is the one that links the kernel that ships, so the
+  # archive has to be added here. It registers only after the platform
+  # supplies an authenticated exclusive PAS1/SMEM/GLINK lease, so linking it
+  # starts no firmware and publishes no synthetic battery.
+  echo "K60DIAG switch=${XNU_K60_PHYSICAL_BATTERY:-unset} boot=${XNU_BOOTSTRAP:-unset} plat=${ARM_DT_PLATFORM:-unset}" >&2
+  if [ "${XNU_K60_PHYSICAL_BATTERY:-0}" = 1 ]; then
+    K60_BATTERY_ARCHIVE=${XNU_K60_PHYSICAL_BATTERY_ARCHIVE:-$ROOT/build/k60-physical-battery/libK60PhysicalBattery.a}
+    if [ ! -f "$K60_BATTERY_ARCHIVE" ]; then
+      echo "XNU_K60_PHYSICAL_BATTERY=1 but $K60_BATTERY_ARCHIVE is missing" >&2
+      exit 1
+    fi
+    PLATFORM_ARCHIVES="$PLATFORM_ARCHIVES -Wl,-force_load,$K60_BATTERY_ARCHIVE"
+    PLATFORM_DEPENDENCIES="$PLATFORM_DEPENDENCIES $K60_BATTERY_ARCHIVE"
   fi
   EXTRA_MAKE_ARGS+=("LD_KERNEL_ARCHIVES=$PLATFORM_ARCHIVES")
   EXTRA_MAKE_ARGS+=("XNU_EXTERNAL_KERNEL_ARCHIVES=$PLATFORM_DEPENDENCIES")
@@ -1110,6 +1280,11 @@ make -C .cache/xnu-work "${XNU_BUILD_TARGET:-build}" SDKROOT="${XNU_SDKROOT:-iph
   DEPLOYMENT_LINKER_FLAGS="-Wl,-ios_version_min,${UNIXNU_IOS_TARGET:-16.0}" \
   RC_DARWIN_KERNEL_VERSION="$XNU_DARWIN" RC_ProjectSourceVersion="$XNU_VERSION" \
   BUILD_LTO=0 BOUND_CHECKS=0 BUILD_WERROR="${XNU_BUILD_WERROR:-0}" MAKEJOBS=-j"${JOBS:-4}" \
+  MEMORY_SIZE="$(awk '/MemTotal/ {print $2 * 1024}' /proc/meminfo)" \
+  SYSCTL_HW_PHYSICALCPU="$(nproc)" \
+  SYSCTL_HW_LOGICALCPU="$(nproc)" \
+  HOST_OS_VERSION="${HOST_OS_VERSION:-14.6}" \
+  HOST_CC="${CLT_PREFIX:-/opt/unixnu-linux/CommandLineTools/usr}/bin/xnu-host-cc" \
   RC_NONARCH_CFLAGS="$EXTRA_CFLAGS" "${EXTRA_MAKE_ARGS[@]}" \
   OBJROOT="$ROOT/build/xnu/ios-obj" SYMROOT="$ROOT/build/xnu/ios-sym" DSTROOT="$ROOT/build/xnu/ios-dst"
 if [ "${XNU_SOURCE_CORECRYPTO14:-0}" = 1 ] && [ "$CRYPTO_BOOTSTRAP_MODE" = source ]; then
