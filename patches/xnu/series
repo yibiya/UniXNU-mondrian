@@ -213,3 +213,4 @@ zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-pong-physical-keys.patch
 0398-k60-pong-runtime-directories.patch
 0600-k60-display-composition.patch
 0602-k60-physical-battery.patch
+0603-k60-ui-diagnostic.patch
