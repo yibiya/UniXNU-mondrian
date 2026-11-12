@@ -1,10 +1,9 @@
 diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
-index 35c58d2..c0300ef 100644
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
-@@ -7193,6 +7193,82 @@ uint64_t native_owner_data_seed_base, native_owner_data_seed_size;
- uint8_t native_owner_data_seed_sha256[32];
- char native_owner_data_device_path[64];
+@@ -7392,6 +7392,82 @@
+ 	__asm__ volatile("" : : "r"(status), "r"(authorized) : "memory");
+ }
  
 +/* Boot-time read-only union views of owner-provided GPU addon content over sealed system directories, mounted after the Data mount and
 + * before launchd starts: the Adreno Metal plugin bundle over /System/Library/Extensions (the original Metal discovery loads
@@ -83,10 +82,10 @@ index 35c58d2..c0300ef 100644
 +}
 +
  static int
- native_owner_data_prepare(proc_t p, user_addr_t scratch)
+ native_owner_cache_prepare(proc_t p, user_addr_t scratch, user_addr_t *envp)
  {
-@@ -7250,6 +7326,7 @@ native_owner_data_prepare(proc_t p, user_addr_t scratch)
- 	if (actual != device || (vfs_flags(data_mount) & MNT_RDONLY) ||
+@@ -8140,6 +8216,7 @@
+ 	if (actual != device ||
  	    strcmp(vfs_statfs(data_mount)->f_fstypename, "apfs")) error = EINVAL;
  	if (!error) native_owner_data_stage = 4;
 +	if (!error) native_gpu_addon_prepare(p, scratch);
@@ -94,7 +93,6 @@ index 35c58d2..c0300ef 100644
  	if (data_root) vnode_put(data_root);
  	native_owner_data_status = error;
 diff --git a/bsd/miscfs/bindfs/bind_vfsops.c b/bsd/miscfs/bindfs/bind_vfsops.c
-index 412f9ec..4466a64 100644
 --- a/bsd/miscfs/bindfs/bind_vfsops.c
 +++ b/bsd/miscfs/bindfs/bind_vfsops.c
 @@ -78,6 +78,8 @@
@@ -106,7 +104,7 @@ index 412f9ec..4466a64 100644
  #define BINDFS_ENTITLEMENT "com.apple.private.bindfs-allow"
  
  #define SIZEOF_MEMBER(type, member) (sizeof(((type *)0)->member))
-@@ -139,8 +141,9 @@ bindfs_mount(struct mount * mp, __unused vnode_t devvp, user_addr_t user_data, v
+@@ -139,8 +141,9 @@
  		return ENOTSUP;
  	}
  
@@ -118,7 +116,7 @@ index 412f9ec..4466a64 100644
  		return EPERM;
  	}
  
-@@ -230,6 +233,9 @@ bindfs_mount(struct mount * mp, __unused vnode_t devvp, user_addr_t user_data, v
+@@ -230,6 +233,9 @@
  	sp->f_flags = flags;
  
  	xmp->bindm_flags = BINDM_CASEINSENSITIVE; /* default to case insensitive */
@@ -129,10 +127,9 @@ index 412f9ec..4466a64 100644
  	error = bindfs_vfs_getlowerattr(vnode_mount(lowerrootvp), &vfa, ctx);
  	if (error == 0) {
 diff --git a/bsd/miscfs/bindfs/bind_vnops.c b/bsd/miscfs/bindfs/bind_vnops.c
-index 8609009..0c659c7 100644
 --- a/bsd/miscfs/bindfs/bind_vnops.c
 +++ b/bsd/miscfs/bindfs/bind_vnops.c
-@@ -105,6 +105,14 @@ bindfs_getattr(struct vnop_getattr_args * args)
+@@ -105,6 +105,14 @@
  		vnode_put(lowervp);
  
  		if (error == 0) {
@@ -148,7 +145,6 @@ index 8609009..0c659c7 100644
  				/* fix up fsid so it doesn't say the underlying fs*/
  				VATTR_RETURN(args->a_vap, va_fsid, vfs_statfs(vnode_mount(args->a_vp))->f_fsid.val[0]);
 diff --git a/bsd/miscfs/bindfs/bindfs.h b/bsd/miscfs/bindfs/bindfs.h
-index c3bebc8..4555530 100644
 --- a/bsd/miscfs/bindfs/bindfs.h
 +++ b/bsd/miscfs/bindfs/bindfs.h
 @@ -81,6 +81,9 @@
@@ -162,10 +158,9 @@ index c3bebc8..4555530 100644
  
  typedef int (*vop_t)(void *);
 diff --git a/osfmk/kern/startup.c b/osfmk/kern/startup.c
-index dfa5da2..e9f129e 100644
 --- a/osfmk/kern/startup.c
 +++ b/osfmk/kern/startup.c
-@@ -470,10 +470,12 @@ kernel_bootstrap(void)
+@@ -468,11 +468,13 @@
  		if (PE_parse_boot_argn("-show_pointers", &namep, sizeof(namep))) {
  			doprnt_hide_pointers = FALSE;
  		}
@@ -173,12 +168,13 @@ index dfa5da2..e9f129e 100644
 -			extern boolean_t spinlock_timeout_panic;
 -			spinlock_timeout_panic = FALSE;
 -		}
-+	}
+ 	}
 +	/* Owner device: honour -no_slto_panic without a debugger-enabled device policy. A thread that waits for an IPI acknowledgement
 +	 * (restartable ranges) then keeps waiting instead of panicking the whole machine; the other cores keep running. */
 +	if (PE_parse_boot_argn("-no_slto_panic", &namep, sizeof(namep))) {
 +		extern boolean_t spinlock_timeout_panic;
 +		spinlock_timeout_panic = FALSE;
- 	}
++	}
  
  	kernel_bootstrap_log("console_init");
+ 	console_init();
