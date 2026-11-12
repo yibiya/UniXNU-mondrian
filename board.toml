@@ -226,6 +226,22 @@ trust_cache_sha256 = []
 # pending. devicetree.py emits darwinboot-memory-size from this key.
 "owned_memory_size" = "0x130000000"  # 4.75 GiB window (ladder step after 5 GiB NO WINDOW)
 
+# K60 has only side/volume keys. This is the native MobileGestalt/BSPlatform
+# contract, not a synthetic Home key or a lock-screen text override:
+# core/docs/guide/mobilegestalt.md:26-44; original20G81 BaseBoard BSPlatform
+# homeButtonType (0x18dcc5dcc) maps Gestalt HomeButtonType=2 to platform type2.
+# The format2 generator emits /buttons from this typed table. Real digitizer
+# events remain responsible for the bottom-edge swipe and normal authentication.
+[adt.buttons.string]
+compatible = "buttons"
+device_type = "buttons"
+
+[adt.buttons.strings]
+button-names = ["hold", "voldown", "volup"]
+
+[adt.buttons.u32]
+home-button-type = 2
+
 # K60 live FDT: xiaomi_touch@0 on QUP0 SE4. These absolute resources are
 # metadata for the board-started driver, not an incomplete interrupt mapping.
 [adt.arm-io.pong-touch.string]
