@@ -1097,6 +1097,15 @@ DYLD_FALLBACK_LIBRARY_PATH=/usr/lib
 - **30 秒判定**：bitbang 读全 `00` → MISO 选错；读全 `ff` → MISO 大概率对了，
   但芯片没响应（需查 CS/CLK 或供电）。
 
+### P-71 **Android v4 的 header_size 不是 kernel 起点**
+
+- **症状**：cand12 的 `fastboot boot` 返回 OKAY，但没有 CDC 控制台，随后回到 fastboot；`console-20261112-094738.json` 记录 0 字节。
+- **根因**：重打包脚本把偏移 20 的 `header_size=1584` 当成数据起点。v4 的头结构长 1584，整页长 4096；kernel 必须从 4096 开始，ramdisk 必须从 `4096 + align4096(kernel_size)` 开始。本次 ramdisk 被放到 550448，而正确地址是 552960，覆盖了 UEFI gzip 尾部。
+- **证据**：cand7 的固件流可解压到 EOF，后接 1866 字节 FDT；cand12 的同一流报 `incorrect data check`。cand12 位于错误偏移的 FAT 与当前 `payload.img` 逐字节相同，SHA256 `49b60bcbc51307ff449e24e72e1c76dd12621c3ff8d156ebceac4a3d9a126a95`，无需回退内核功能。
+- **修复**：使用已存在的 `scripts/build-bootimg.py:29-47` 布局；重打包工具迁入 `scripts/repack-boot.py`，保留完整 4096 字节头页，按页对齐 kernel/ramdisk，并在写出前验证固件 gzip 和附加 FDT。
+- **检查**：`python3 scripts/test-repack-boot.py` 覆盖真实偏移下的固件解压、跨页载荷、固件 CRC 损坏及签名区截断。重建命令：`python3 scripts/repack-boot.py --template /root/k60/work/touch-gpu/gpu8-start.img --ramdisk /root/k60/work/out-cand/mondrian/ipados-16.6.1-20G81/mondrian/payload/payload.img --output /mnt/e/k60-ios/boot-cand13-20261112.img`。
+- **30 秒判定**：有 `ANDROID!` 不等于镜像可启动；从 **4096** 取 kernel 区域，用 `zlib.decompressobj(31)` 检查 EOF 和附加 FDT。不要只在整包里搜索诊断字符串。
+
 ## 台账维护规则
 
 1. 新坑确认后**当场追加**（与 ISSUES 同步，不等收尾）。

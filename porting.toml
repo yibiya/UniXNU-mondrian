@@ -24,11 +24,11 @@ evidence = [{ kind = "source", reference = "board.toml", result = "schema_versio
 id = "firmware"
 status = "device-verified"
 components = []
-paths = ["proprietary-files.txt", "mac-build/**", "scripts/extract-files.py", "scripts/gen-touch-firmware.py", "drivers/DarwinBoot22/**", "scripts/build-firmware.sh", "scripts/build-darwinboot22-macos.py", "scripts/verify-firmware.py"]
+paths = ["proprietary-files.txt", "mac-build/**", "scripts/extract-files.py", "scripts/gen-touch-firmware.py", "drivers/DarwinBoot22/**", "scripts/build-firmware.sh", "scripts/build-darwinboot22-macos.py", "scripts/verify-firmware.py", "scripts/repack-boot.py", "scripts/test-repack-boot.py"]
 inputs = ["Identify the firmware and boot hardware, resources and existing component interfaces for this board."]
 configuration = ["Record the board.toml fields, DTS properties and defconfig values used for firmware and boot."]
 procedure = ["Follow the firmware and boot stage in the porting guide and record the actual commands."]
-findings = ["Collect the first firmware and boot observation, its cause when established, and the resulting implementation decision."]
+findings = ["2026-11-12 boot packaging regression: cand12 (cba1c0ecad1858a251abc241f5a17989580749a233d5d0cdacc8764869e70c4f) returned to fastboot without a CDC console. The v4 header declares a 1584-byte structure, but firmware starts at the fixed 4096-byte page; work/touch-gpu/repack-boot.py incorrectly used 1584 as the slot start. The resulting payload begins at 550448 instead of 552960, overwriting the compressed firmware tail. zlib.decompressobj(31) accepts cand7 with EOF and an appended FDT, but rejects cand12 with an incorrect data check. The cand12 FAT payload is byte-identical to the current payload.img (49b60bcbc51307ff449e24e72e1c76dd12621c3ff8d156ebceac4a3d9a126a95), so recovery can retain all current kernel and userland changes.", "Prior art: scripts/build-bootimg.py:29-47 and the same-SoC work/refs/pong-ios16/scripts/build-bootimg.py:29-47 already use a 4096-byte firmware start, aligned ramdisk and signature offsets. Reuse that v4 layout rather than rolling back functional patches."]
 completion = ["Firmware image builds, enters UniXNU, publishes the framebuffer and preserves the documented memory reservations."]
 limits = ["Hardware inputs and implementation are pending for this board."]
 next_action = ["Inventory the required firmware and boot inputs before implementation."]
