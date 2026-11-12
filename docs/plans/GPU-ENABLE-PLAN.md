@@ -1,8 +1,125 @@
-# K60 Adreno 730 scanout 启用方案
+# K60 Adreno 730 GPU 修复与验收计划
 
-> 范围：只读调研 + 本文件。没有改 `patches/`、`series`、`drivers/`、`userland/`。
-> 结论全部带 `文件:行`；查不到或没有证据的写在 ⑥ 的“未核实”。
-> 本文的“K60”指 `mondrian`（SM8475，20G81），“pong”指 Nothing Phone (2) 的 pong16 参考树。
+> 当前计划：2026-11-12，mondrian / SM8475 / Adreno730v3 / iOS 16.6.1 (20G81)。
+> 本轮仅调研和制定计划，不改实现、不构建、不上机、不写设备分区。
+> 本节为当前执行入口；后面的旧 scanout 调研仅作历史参考，不再代表现状。
+
+## 当前修复计划（2026-11-12）
+
+### 结论与范围
+
+先打通 **电源/时钟 → SMMU/GMU/HFI → SQE/ZAP/CP → 原生用户客户端 → Metal 渲染 → GPU 上屏 → 系统壁纸与稳定性**。
+不是重写整套 GPU 驱动，也不是同时打开所有启动参数。已构建的 Turnip/Metal 桥可以复用，但构建成功不等于 GPU 执行成功。
+
+壁纸不必然以 GPU 为唯一前提；当前日志只能证明没有观测到壁纸可用输出。`PBUIWallpaperImage` 存在、原生 setter completion 返回、壁纸层 `surface=0`，都不能排除 GPU、软件 renderer、资源解码或 scene 路径的问题。先前“问题肯定不在 GPU/合成器”的判断撤回。
+
+### 已知事实与缺口
+
+| 项 | 证据 | 当前判定 |
+|---|---|---|
+| 可恢复基线 | `E:/k60-ios/boot-cand24-20261112.img`；SHA256 `3ecba34b4f41496ba7e1bafc01f0a44d0bdd7eccdd4483cdc5bf5d69e8e9fba8`；`console-20261112-182641.json` 的 fastboot rc=0、COM8、84552 B | 软件显示及三键已有板上证据，不作为 GPU 证据 |
+| 本机硬件和固件 | `work/device-evidence/be74ba07/bringup-research.json:24-29`；`firmware-manifest.json:8-36` | A730v3 `0x07030002`，本 K60 的 GMU/SQE/ZAP 文件已读取并记录来源 |
+| 当前第一实测失败 | `console-20261112-013119.log:491-494`：secure RSC read `0x17a2000c` 返回 `0xfffffffffffffffe`，随后 `FAIL parent votes` | 还没有 GMU/HFI、ZAP、CP 或 Metal 执行证据；不重复运行已知失败路径 |
+| 当前源码 | `PongAdrenoPlatform.cpp:412-427` 已换成 direct RSC mapping；同文件 `:2-5` 却仍说禁止 EL1 访问 | 访问安全证据冲突必须先解决；不能因 secure-IO 被拒绝就默认直读安全 |
+| 内核实现 | `configs/mondrian_defconfig:52` 为 `y`；`patches/xnu/series:195-197` 已列 scanout/GPU-only/pitch | 旧文档“没链接/缺三个补丁”已过时；仍须核对实际候选的编译配置和链接结果 |
+| 用户态构建 | `work/gpu-userspace/build-report.json:235,244,414`；`work/touch-gpu/gpu-userspace-integration.json:34-54` | Turnip、桥、bundle 已构建；publication=false、hardware=false，不重装已成功的工具链 |
+| 同 SoC 参考 | 本轮成功 fetch `Chengdong-Yu/UniXNU-pong` 的 `ios16`，得到 `7798f1e5f261e7121d01d7e4807ed73512737ded` | 其 `drivers/PongAdreno/README.md:3-8,229-237` 同样未确认 GPU 渲染；可复用实现，不可借用成功结论 |
+
+证据路径：日志在 `E:/k60-ios/work/cap/`；表中的 `work/...` 相对 `/root/k60`；驱动和配置路径相对此设备仓库。
+
+### 阶段 0：固定基线、消除证据冲突
+
+1. 保留 cand24 不覆盖；记录每个候选的 device/core revision、kernel/payload/boot SHA、实际 FAT 中 `unixnu.toml`、固件和用户态版本。
+2. 对照现有 K60 `live-fdt.dtb`、command-db、固件清单和 Nothing SM8475 源码，核对 APSS DRV2/TCS3、CX/MX 资源、GPUCC、GMU、GPU SMMU、IRQ 和保留区。DT 地址声明不等于 XNU 访问授权；SID 数量不等于 bank 所有权。
+3. “22-step 全 result=0”已追到 `work/up-device/porting.toml:147-167` 转述 `usblog-20261110-234429`，不是 Pong 原始流；该原始 capture/sidecar 未找到，不能绑定本机 be74ba07。历史挂死报告来自 [ios-sweet-k60 d11a3c0e](https://github.com/XTOM0706/ios-sweet-k60/commit/d11a3c0e515a440bc7ef5dcb4d7c40552e1658ed)，报告写首读 `0x17a00000`，0248 探针却首读 DRV2 `0x17a20000`，没有隔离的 map/read 原证。因此两者都不能证明当前直读安全；后续补齐设备/镜像/loader/冷热状态与访问地址来源，不复试挂死路径来补。
+4. 核对 framebuffer、ZAP、ring、页表和 BO 池的物理范围及保留状态。framebuffer 位于 managed RAM 时必须证明已从 VM 分配器排除，不能只凭一条范围日志继续。
+5. 核对最终启动参数长度：当前 ARM64 boot-args 上限 608 B（`board.toml:185-188`）；保留工作链所需参数，不截断，也不把所有 GPU 参数一次塞进去。
+
+**出口：** 唯一基线和可追溯资源表齐全；RSC 访问选择有本板证据，危险访问不得用“再试一次”来确认。仓库 `docs/ops/HARD-RULES.md:24-46` 现行规则禁止 direct RSC，本计划不授权违反；先实现有契约的替代路径，或以新证据按项目流程正式解决该限制，之后才可选 MMIO。证据缺口先走现有可达的固件/源码/只读记录调查，不上机猜地址。
+
+### 阶段 1：修电源投票与时钟
+
+主要文件：`PongAdrenoPlatform.cpp`、`PongAdrenoPower.c`、`PongAdrenoClocks.c`。
+
+- 在阶段 0 的结果上选择唯一实际后端：已授权的 MMIO，或有真实接口契约的固件代办。不能虚构可用 SCM 接口；若需要 UEFI handoff，必须实现真实投票及可验证的交付契约。
+- 使用真实 command-db/AUX 及保留票值；不得降低其他所有者的请求，不超过固件许可等级，不借“最高 corner”掩盖资源匹配错误。
+- 只租用确认空闲的 active TCS；保留 sleep/wake 与其他 driver 请求。完成判据必须来自本次事务的 ISSUED/COMPL、idle/进展，不接受旧状态或伪 ACK。
+- 修正后候选只请求 GPU startup，Metal/scanout/GPU-only 保持关闭；遇到首个失败阶段就停止后续资格认定。
+
+**出口：** `parent ARC votes acknowledged result=0`、`CX clocks result=0`，GPUCC/PLL 状态符合本板，USB/系统存活且无新异常。MMIO 总线访问本身可能硬挂，软件 polling timeout 不能防住，必须在访问前解决授权风险。
+
+### 阶段 2：GMU、地址空间和 HFI
+
+主要文件：`PongAdrenoPlatform.cpp`、`PongAdrenoSmmu.c`、`ArmSmmu4K/`、`PongAdrenoGmu.c`、`PongAdrenoHfi.c`。
+
+- 保持真实 cold-master 检查：GX off、CM3 reset。若现场不满足，研究实际 handoff，不删除检查强行接管。
+- 4 KiB CPU/DMA 页、真实物理页表、cache 属性与 clean/invalidate 一致；GMU 与 GPU 使用各自确认可租用的 context/ASID。
+- 区分 GPU SMMU `0x03da0000` 与 UFS/USB 的 SMMU；USB 日志不能作为 GPU SMMU 健康证据。保留 secure SID 和其他活动 stream。
+- 上传本板 GMU 固件，采用 SM8475 的队列布局及 PERF/BW/CORE_FW_START 顺序；要求新鲜、类型/序号匹配的真实 ACK。
+
+**出口：** `GMU native4K context result=0`、`GMU firmware/HFI result=0`、`GMU power handshake result=0`，无 GPU SMMU fault。仅 GMU 成功仍不发布 GPU-ready。
+
+### 阶段 3：SQE、ZAP、CP 与原生 BO 客户端
+
+主要文件：`PongAdrenoCp.cpp`、`PongAdrenoZap.c`、`submit/`、`PongAdrenoNativeGlue.cpp`。
+
+- 复用 gen7-4-0/2 MiB GMEM 配置；不用 A740 初始化表或 FD730 假 ID。SQE payload 和整页 backing 分开处理，固件来自本 K60。
+- 保持当前板级启动顺序：CP_ME_INIT → RPTR drain/RBBM idle → 真正 PAS13 ZAP 认证 → nonsecure switch → CP 写内存与 timestamp fence（`PongAdrenoCp.cpp:352-403`）。bootstrap drain 不等于渲染 fence。
+- 在合法原生 ABI 上单独验证 query、BO allocate/import/map、submit、wait、unmap/free；已完成的写入值和边界必须正确，释放后再次分配/映射不能读到旧页。
+- 故障或 timeout 后隔离队列，DMA 未证实停止就保留 BO/页表，不在同一次启动里假装可恢复。
+
+**出口：** `CP ready; authenticated nonsecure fence result=0` 和 `CP/user-client startup result=0`；原生用户态提交产生真实新 fence 与正确结果，正常 teardown 无残留活动映射。CP 工作不等于 shader 工作。
+
+### 阶段 4：20G81 Metal / Turnip 真实渲染
+
+主要文件：`drivers/PongMetal/`、`scripts/build-pong-userspace-linux.py`、`scripts/describe-pong-metal-abi.py`、`userland/init.c`、`userland/ui_compat.c`。
+
+- 复用已构建的 Mesa `85fda3b3` 与 metal2vulkan `720ef1ce` 配套来源/补丁；不替换成最新 A740/iOS27 栈，不重复成功的依赖安装。
+- 完成当前 guest 20G81 ABI 核对：真实 dyld cache、`_MTLDevice` extent/selector、IOKit/Metal 导入、IOAcceleratorES prelink 绑定，以及 `MTLPixelFormatGetInfo` 七 word 返回的调用约定和 QuartzCore policy。复用 `work/touch-gpu/wallpaper-native20G81.json:442` 已成功的 sealed fext/cache 读取方法，不重新假定整个 cache 不可读；SDK 可链接不能代替 guest ABI 资格。
+- 保持 publication 默认 0；用阶段专用、受限诊断客户端验证真实 Vulkan/Metal device、pipeline、shader draw 和完成后的像素。采用简单纹理/三角形图案，并读回已知像素及未触碰区域，不能只做 clear/blit 或“device 非 nil”。
+- 在 shader/IOSurface import 验证后再启用目标系统客户端。保留 CPReady/MetalEnabled/runtime ABI guard，不能手写 readiness 属性绕过。
+- 完成安装/发现闭环：`init.c:461-480` 的现有 views 没有 Metal Extensions mount，`:516,543-547` 只向 backboardd 注入入口；必须让实际系统客户端可见完整 `PongAdrenoMetal.bundle`、sibling dylib、root-owned clients/publish。核对其他内核 staging 后补真实只读 Extensions 发现路径，保留 stock lower；不用不同名称的 NativeAdrenoMetal/offline broker 替代。`PongMetalPlugin.mm:174-181` 优先读取 Extensions，合法 marker=0 会直接拒绝，因此禁止留下遮蔽 Data=1 的旧 marker。
+- 核对加载与初始化时序：`ui_compat.c:843-850` 会缓存 renderer=null；`init.c` 也有 Metal 入口注入。必要的改动是 readiness-aware 切换及正确进程启动时机，避免过早缓存永久软件模式；不先删掉所有软件兼容修复。
+
+**出口：** 指定 20G81 客户端完成真实 shader pipeline、GPU command buffer、正确像素、IOSurface import；冷/热 pipeline 分开记录。bundle 编译成功、device 创建成功和 CP 内存写入均不单独算本阶段完成。
+
+### 阶段 5：GPU scanout 上屏
+
+主要文件：`PongAdrenoScanout.cpp`、`PongMetalScanout.h`、既有 framebuffer 三个 GPU 补丁。
+
+- 阶段 4 通过后打开 scanout，先保留 CPU 的安全回退。复核实际物理 framebuffer、1440×3200、pitch、BGRA、旋转和寿命。
+- 区分 offer、deliver、GPU submit、fence、complete 和真正屏幕变化；顺序必须一致。用上一阶段的已知输出作单层全屏资格画面。
+- 当前 scanout 只支持单层全屏无缩放 BGRA（`PongAdreno/README.md:68-73`）；不把多层 CPU 回退当 GPU 全合成。
+- 再用一次受控 `pong_gpu_only=1` 排除 CPU 绘制：画面持续真实更新且完成序号递增。试验后恢复普通安全策略；已交付但 DMA 未退休的帧必须隔离保留，不能 CPU 同时覆盖。
+
+**出口：** `PONG SCANOUT: GPU frame completed ... status=0x0`、匹配的实际屏摄，以及 GPU-only 场景持续更新，无错误退休或条带。仅 `first frame presented` 和 FPS 不算 GPU 证据。
+
+### 阶段 6：系统壁纸、合成和稳定性
+
+- GPU/Metal 资格通过后验证 backboardd、SpringBoard 及实际壁纸渲染进程；按真实 scene 链确定客户端，不凭进程名字猜。
+- 撤除或按 readiness 限定阻断加速的 renderer/poster 策略；保持与 GPU 无关的设备兼容修复。核对 HEIC 解码、纹理上传、AIR/pipeline、绘制、输出 surface 与合成提交。
+- 若 GPU 已工作而壁纸仍黑，沿以上链定位第一失败点；若 CA 已把多层场景合成为单 surface，现有 scanout 可用；否则真实多层 GPU 合成是本计划的实现项，不把单层拷贝当最终交付。
+- 验证锁屏和桌面壁纸实际像素、亮灭屏、切场景、客户端退出/重启、映射回收和冷/热启动。先固定 60 Hz；120 Hz、DVFS、preemption 和性能优化不混入首次修复。
+
+**最终出口：** 连续 30 分钟包含上述操作，壁纸正确且有 shader/fence/上屏证据，三键、UFS/USB 无回归，无 GPU/SMMU fault、挂起或持续增长的未退休 BO。需要的 warm/reset/resume 路径以真实实现闭环，不能靠跳过功能通过。
+
+### 每轮执行与停止规则
+
+- 一个候选只改变一个失败层；源码与调研先提交/push，构建后核对实际镜像内容，再 RAM-only `fastboot boot` 并抓完整日志/屏摄。每轮更新 `porting.toml` 的证据与 next_action，不提前标记 hardware-qualified。
+- 未提交 GPU 阶段可继续软件路径；已提交且 DMA 状态不确定必须隔离并重启，不能强行回退写同一 framebuffer。
+- 禁止 flash 安卓分区、userdata、persist；不改变现有 Data UUID/根卷布局，不为 GPU 混入触摸、电池、120 Hz 或其他未请求改动。
+- 对已知的 secure-IO `-2` 和 RSC 硬挂不复试以“确认”；缺失证据和拟实施动作分开记录。
+
+### 参考与适用限制
+
+- [Pong ios16 GPU](https://github.com/Chengdong-Yu/UniXNU-pong/blob/7798f1e5f261e7121d01d7e4807ed73512737ded/drivers/PongAdreno/README.md)：同 SoC 实现与尚未确认的阶段，不是本板渲染成功证据。
+- [Nothing SM8475 gen7 GMU](https://github.com/NothingOSS/android_kernel_msm-5.10_nothing_sm8475/blob/sm8475/t/drivers/gpu/msm/adreno_gen7_gmu.c)：板族硬件顺序来源；APSS RSC 与 GPU RSCC 是不同窗口。
+- [UniXNU GPU adaptation](https://unixnu.com/porting/gpu)：分层硬件验收方法可复用；页面中的 A740/iOS17/27 固件、初始化表、ABI、默认性能策略不能直接套到 A730/20G81。
+
+## 历史 scanout 调研（已过时，不作为执行清单）
+
+以下保留旧补丁分析。它把缺少补丁、未传参数等旧状态当现状；当前以本页前面的修复计划、实际镜像和实机证据为准。
+
 
 ## 阅读约定
 

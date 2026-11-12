@@ -45,7 +45,7 @@ docs/
 |---|---|---|---|
 | plans/120HZ-PORT-PLAN.md | 120Hz 移植方案（GPU scanout 生效后执行）；页首已加数据源更正，禁用 sharp 面板的 0xC6 切档 | 当前 | — |
 | plans/APPLY-PIPELINE.md | 生成并写入 iOS 16 OS 窗口的完整流程：macOS `prepare()` + `apply()`，长度不变，recovery dd 写回 | 当前 | — |
-| plans/GPU-ENABLE-PLAN.md | Adreno 730 scanout 启用方案：补丁依赖、代码路径、验证判据与回退 | 当前 | — |
+| plans/GPU-ENABLE-PLAN.md | 2026-11-12 GPU 修复计划：RSC 电源、GMU/HFI、ZAP/CP、Metal、scanout、壁纸与稳定性；旧补丁清单标为历史 | 当前 | — |
 | plans/K60-TOUCH-PARAMS.md | K60 Goodix / GENI-SPI 触摸参数表：live merged FDT 解析、9 个 DT 属性、置信度与复核方法 | 当前 | — |
 | plans/K60-120HZ-PLAN.md | 旧版 K60 120Hz 方案；面板数据取自通用参考面板 `sharp_qhd_plus_dsc_cmd`，结论已被 T2 证伪 | 已证伪 | 副本，原件在 `D:/Android/k60-ios/deliverables/K60-120HZ-PLAN.md` |
 
