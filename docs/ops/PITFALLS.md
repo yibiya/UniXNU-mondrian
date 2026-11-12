@@ -1122,6 +1122,13 @@ DYLD_FALLBACK_LIBRARY_PATH=/usr/lib
 - **检查**：`python3 core/scripts/test-devicetree-handoff.py` 覆盖禁用 CPU 导致的逻辑编号间隙、物理 affinity 保持、UFS 窗口宽度与字节序。新载荷必须与 cand7 的 CPU/UFS 合同一致，同时保留新触摸节点。
 - **边界**：这些是确定的合同缺失；是否解释所有前控制台复位，以修复后实机结果判定。
 
+### P-74 **启动演示用 delayed unlock 不能成为正常锁屏行为**
+
+- **症状**：cand15 已恢复桌面，用户指出应先出现锁屏而非直接进桌面。
+- **根因**：`userland/ui_compat.c` 的 10 秒延迟 callback 主动调用 `SBLockScreenManager unlockUIFromSource:withOptions:` source24；这是缺输入时展示桌面的 workaround，不是原生锁屏流程。
+- **修复**：保留主队列上的渲染偏好与 screen-on，删除自动 unlock，局部函数改为 `present_initial_screen` / `start_ui_presentation`，正常本地认证路径不变。已重生成实际 0340 嵌入库（95824B，SHA256 `85f2431d238e7b6250483d69c2fddb11e9d63cf5c9c01c2a192ec54ec896b82a`，4KiB 签名通过）。
+- **检查**：启动后保留原生锁屏；只有真实用户输入才能进入解锁路径。触摸缺失不能用自动解锁掩盖；最终以屏幕及状态转换判定。
+
 ## 台账维护规则
 
 1. 新坑确认后**当场追加**（与 ISSUES 同步，不等收尾）。
