@@ -16,7 +16,7 @@ new file mode 100644
 index 0000000..b033b90
 --- /dev/null
 +++ b/bsd/dev/pong_goodix.c
-@@ -0,0 +1,1336 @@
+@@ -0,0 +1,1346 @@
 +/* Goodix Berlin-D on Redmi K60 / SM8475. Adapted from HackiOS
 + * redwood_goodix.c (APSL 2.0) and the Pong driver. Board resources come
 + * from the K60 live FDT; Berlin framing follows the Linux transport. */
@@ -34,6 +34,7 @@ index 0000000..b033b90
 +
 +extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 +extern kern_return_t thread_terminate(thread_t thread);
++extern int pong_touch_iovdd_enable(void);
 +
 +static vm_offset_t gpio_pages[7], gcc_qup, gcc_core, gcc_vote, gcc_pll, se;
 +static uint64_t tlmm_phys, gcc_phys, se_phys;
@@ -176,16 +177,20 @@ index 0000000..b033b90
 +
 +/* ---- K60 supplies ------------------------------------------------------------------------------- */
 +
-+static void
++static bool
 +io_supply_on(void)
 +{
-+    /* AVDD is a load-switch GPIO. IOVDD is pm8350c_l2 at 1.8 V, not the
-+     * Pong ldoc3/ldoc12 pair. No RSC, TCS or command-database access is safe
-+     * on this board. Retained IOVDD is a prerequisite, NOT measured power. */
-+    printf("Pong touch: require retained pm8350c_l2 IOVDD 1.8 V; no rail vote or power-good claim\n");
++    /* Request only target ldoc2 through the shared, serialized RPMh owner.
++     * Raw PMIC RW is denied. RESET remains asserted until rail/ABI checks. */
++    int error = pong_touch_iovdd_enable();
++    if (error) {
++        printf("Pong touch: ldoc2 RPMh request failed err=%d; RESET held low\n", error);
++        return false;
++    }
 +    gpio_output(avdd_gpio, true, PULL_NONE, 6);
 +    sleep_ms(15);
 +    printf("Pong touch: AVDD GPIO%u enabled, IRQ=%u (level only)\n", avdd_gpio, gpio_get(PIN_INT));
++    return true;
 +}
 +
 +/* ---- clocks (GCC) -------------------------------------------------------------------------------- */
@@ -1145,7 +1150,7 @@ index 0000000..b033b90
 +
 +/* Android identified this exact peripheral. Its ldoc2 naming is inferred;
 + * report digital state only, not physical voltage or touchscreen power. */
-+static void
++static bool
 +goodix_supply_snapshot(void)
 +{
 +    struct pong_spmi_peripheral p;
@@ -1153,26 +1158,28 @@ index 0000000..b033b90
 +    uint32_t status = 0;
 +    if (!pong_spmi_find(0x2c2, &p)) {
 +        printf("Pong touch: SID2:C200 observer mapping unavailable\n");
-+        return;
++        return false;
 +    }
 +    int error = pong_spmi_read(&p, 0, id, sizeof(id), &status);
 +    printf("Pong touch: SID2:C200 APID=%u identity err=%d arb=%#x\n",
 +        p.channel, error, status);
-+    if (error) return;
++    if (error) return false;
 +    if (id[4] != 4 || id[5] != 0x87 || id[6] == id[5]) {
 +        printf("Pong touch: SID2:C200 identity differs type=%#x subtype=%#x dummy=%#x; stop rail read\n",
 +            id[4], id[5], id[6]);
-+        return;
++        return false;
 +    }
 +    error = pong_spmi_read(&p, 8, &state, 1, &status);
 +    printf("Pong touch: SID2:C200 ready-register err=%d arb=%#x\n", error, status);
-+    if (error) return;
++    if (error) return false;
 +    error = pong_spmi_read(&p, 0x40, control, sizeof(control), &status);
 +    printf("Pong touch: SID2:C200 control err=%d arb=%#x\n", error, status);
-+    if (error) return;
++    if (error) return false;
 +    printf("Pong touch: SID2:C200 digital ready=%u enable=%u programmed=%umV valid=%umV mode=%#x raw-status=%#x\n",
 +        (state >> 7) & 1, (control[6] >> 7) & 1,
 +        (unsigned)le16(control), (unsigned)le16(control + 2), control[5], state);
++    return (state & 0x80) && (control[6] & 0x80) &&
++        le16(control + 2) >= 1800 && le16(control + 2) <= 1980;
 +}
 +
 +
@@ -1206,6 +1213,10 @@ index 0000000..b033b90
 +            spi_transfer = geni_transfer;
 +        }
 +    }
++    if (!goodix_supply_snapshot()) {
++        printf("Pong touch: verified supply state unavailable; RESET held low\n");
++        return false;
++    }
 +    /* Actual K60 goodix_core.ko: Berlin-D releases RESET, waits 100 ms,
 +     * then reads identity. There is no boot-option write/read prerequisite. */
 +    gpio_set(PIN_RESET, true);
@@ -1214,7 +1225,6 @@ index 0000000..b033b90
 +    sleep_ms(100);
 +    if (touch_stage == 7) printf("Pong touch: RESET after100ms io=%#x IRQ=%u MISO=%u\n",
 +        rd(GPIO_IO(PIN_RESET)), gpio_get(PIN_INT), gpio_get(PIN_MISO));
-+    if (touch_stage == 7) goodix_supply_snapshot();
 +    if (!goodix_probe(true)) {
 +        printf("Pong touch: chip identity unavailable; no /dev/pong-touch\n");
 +        return false;
@@ -1241,9 +1251,9 @@ index 0000000..b033b90
 +    wr(GPIO_IRQ_STATUS(PIN_INT), 0);
 +    gpio_configure(PIN_INT, 0, PULL_UP, 8, false);
 +    gpio_output(PIN_RESET, false, PULL_UP, 8);
-+    io_supply_on();
++    if (!io_supply_on()) goto out;
 +    if (touch_stage == 2) {
-+        printf("Pong touch: stage 2 GPIO/AVDD complete; retained IOVDD not measured\n");
++        printf("Pong touch: stage 2 GPIO/AVDD/RPMh complete; chip not identified\n");
 +        goto out;
 +    }
 +    if (touch_stage != 7) {
