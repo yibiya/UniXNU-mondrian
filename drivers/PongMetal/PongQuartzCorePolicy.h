@@ -67,16 +67,11 @@ static int PongApplyQuartzCorePolicy20G81()
                 blockCopied!=sizeof invoke || invoke!=flag.initializer+slide)return finish(-5);
         dispatch_once_f(reinterpret_cast<dispatch_once_t *>(flag.once+slide),
             reinterpret_cast<void *>(flag.block+slide),reinterpret_cast<dispatch_function_t>(invoke));
-        uint64_t once=0;uint8_t value=0;vm_size_t copied=0;
-        kern_return_t read=vm_read_overwrite(mach_task_self(),flag.once+slide,sizeof once,
-            reinterpret_cast<vm_address_t>(&once),&copied);
-        if(read!=KERN_SUCCESS || copied!=sizeof once || once!=UINT64_MAX) {
-            char line[160];snprintf(line,sizeof(line),"decoded-image once flag=0x%llx read=%d bytes=%llu value=0x%llx",
-                (unsigned long long)flag.value,read,(unsigned long long)copied,(unsigned long long)once);
-            report(line,-6);return finish(-6);
-        }
-        copied=0;
-        read=vm_read_overwrite(mach_task_self(),flag.value+slide,sizeof value,
+        // dispatch_once_f has synchronized the completed initializer. Apple ARM
+        // can leave a quiescent generation here instead of ~0; the predicate's
+        // private representation is not a completion contract.
+        uint8_t value=0;vm_size_t copied=0;
+        kern_return_t read=vm_read_overwrite(mach_task_self(),flag.value+slide,sizeof value,
             reinterpret_cast<vm_address_t>(&value),&copied);
         if(read!=KERN_SUCCESS || copied!=sizeof value || value>1) {
             char line[160];snprintf(line,sizeof(line),"decoded-image bool flag=0x%llx read=%d bytes=%llu value=0x%x",
