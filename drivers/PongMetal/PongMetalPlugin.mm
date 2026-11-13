@@ -192,22 +192,30 @@ static bool selectedClient()
 }
 static void startPresentation(id candidate,unsigned port)
 {
-    if(strcmp(getprogname(),"backboardd"))return;
-    using Ref=kern_return_t(*)(unsigned);
-    auto retain=(Ref)dlsym(iokit,"IOObjectRetain"),release=(Ref)dlsym(iokit,"IOObjectRelease");
-    if(!retain || !release || retain(port))return;
-    // Leave the stock catalog's construction lock before creating the
-    // presenter. Its actual client retains the device and scanout backing.
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE,0),^{
-        pongscanout::start(iokit,port,(id<MTLDevice>)candidate);release(port);
-    });
+    if(!strcmp(getprogname(),"backboardd")) {
+        using Ref=kern_return_t(*)(unsigned);
+        auto retain=(Ref)dlsym(iokit,"IOObjectRetain"),release=(Ref)dlsym(iokit,"IOObjectRelease");
+        if(retain && release && !retain(port)) {
+            // Leave the stock catalog's construction lock before creating the
+            // presenter. Its actual client retains the device and scanout backing.
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE,0),^{
+                pongscanout::start(iokit,port,(id<MTLDevice>)candidate);release(port);
+            });
+        }
+    }
     // Bounded observations of real application work, not synthetic renders.
     // RAM cache journals disappear on REC; retain these few status lines.
-    for(unsigned seconds:{5u,20u,60u})
+    for(unsigned seconds:{5u,20u,60u,120u})
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,int64_t(seconds)*NSEC_PER_SEC),
             dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
-                char status[240]={};native_bridge_metal_status(status,sizeof(status));
-                report(status,0);
+                char telemetry[8192]={};native_bridge_metal_telemetry(telemetry,sizeof(telemetry));
+                char *line=telemetry;
+                while(*line) {
+                    char *end=strchr(line,'\n');if(end)*end=0;
+                    report(line,0);
+                    if(!end)break;
+                    line=end+1;
+                }
             });
 }
 }
