@@ -753,3 +753,21 @@ RGB 变化和越界拒绝通过。插件以真实 iPhoneOS SDK 重链接（NOUND
 `85822ece66a3d5cdab138ff67ffcfd263a8d70088f397cbb2b9342d3136ba535`，
 payload kernel `5bc29dbc`，编译内核 `4df14bb1`，保留 gpuH 的 UEFI/kernel slot。
 
+
+### 7.10 压缩策略 -6：错误读取 dispatch_once 内部完成值
+
+`gpuI` 日志 `console-20261113-174827.log`（229833 B）显示：backboardd ASTC once
+读取成功、8 B、值 `0xadc6`；SpringBoard universal once 值 `0x12b4e`。
+两值低两位均为 2，符合 Apple ARM 的 quiescent-generation 完成态。
+[Apple libdispatch-1415.140.2 once.c](https://github.com/apple-oss-distributions/libdispatch/blob/libdispatch-1415.140.2/src/once.c#L43-L70)
+和 [shims/lock.h](https://github.com/apple-oss-distributions/libdispatch/blob/libdispatch-1415.140.2/src/shims/lock.h#L629-L646)
+明确允许初始化完成后暂存 generation，而非立即变成 `~0`。此前强制全 1 检查错误。
+修复删除内部 predicate 读取和判断，依赖 `dispatch_once_f` 返回的同步保证；保留
+UUID、block invoke、原初始化器、bool 取值范围和可写性检查。没有伪造 once 完成值。
+
+RGB 探针：23 个窗口、4326 次已完成 GPU 拷贝，大多数窗口源/目标变化数相同；
+有 7 次采样不匹配，拷贝期间源变化频繁。后段每 5 秒约 21–110 次 RGB 网格变化，
+不能简化成 GPU 每秒只提交一次，也不能由256点证明整幅画面和物理 latch 正确。
+backboardd 120秒表：7151 次完成，平均13587us；SpringBoard 未产生 Metal commands。
+这些证据不支持把 shader 编译或拷贝成本直接断言为约1fps主因。
+
