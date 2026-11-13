@@ -25,6 +25,7 @@
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMemoryDescriptor.h>
 #include <pexpert/pexpert.h>
+#include <kern/clock.h>
 
 namespace {
 
@@ -61,6 +62,19 @@ unsigned panel_on_done;
 unsigned panel_brightness = 0;
 int panel_on_result = -100;
 
+/* K60 FDT: MDSS0xae00000, INTF pages0x35000..0x38000. Same SM8475
+ * zizhan dpuBus/intfRate require GCC_DISP_AHB and DISP_CC_MDSS_AHB before
+ * any MDSS access: scanning alone does not imply the register clock is on.
+ * This probe never enables clocks or writes DPU/DSI registers. */
+IOMemoryDescriptor *probe_desc[7];
+IOMemoryMap *probe_maps[7];
+vm_offset_t probe_va[7];
+bool probe_enabled;
+uint64_t probe_started,probe_previous;
+uint32_t probe_frames[4];
+uint16_t probe_te[2];
+uint64_t probe_sampled[4];
+
 void panel_log(const char *fmt, ...)
 {
 	char text[220];
@@ -73,6 +87,20 @@ void panel_log(const char *fmt, ...)
 
 inline uint32_t dsi_rd(uint32_t off) { return *(volatile uint32_t *)(dsi_map + off); }
 inline void dsi_wr(uint32_t off, uint32_t v) { *(volatile uint32_t *)(dsi_map + off) = v; }
+
+vm_offset_t probe_page(unsigned slot,uint32_t physical)
+{
+    if(!probe_va[slot]) {
+        probe_desc[slot]=IOMemoryDescriptor::withPhysicalAddress(physical,4096,kIODirectionIn);
+        if(probe_desc[slot])probe_maps[slot]=probe_desc[slot]->map();
+        if(probe_maps[slot])probe_va[slot]=probe_maps[slot]->getVirtualAddress();
+    }
+    return probe_va[slot];
+}
+uint32_t probe_read(vm_offset_t base,unsigned offset)
+{
+    return *reinterpret_cast<volatile uint32_t *>(base+offset);
+}
 
 bool dsi_init(void)
 {
@@ -241,7 +269,55 @@ extern "C" bool pong_panel_bringup(void)
 	panel_brightness = 0xff;
 	panel_on_result = 0;
 	panel_log("K60 PANEL: bring-up complete (0x11/0x29/0x51), MDP-busy waits=%u\n", dsi_mdp_waits);
+    unsigned probe=0;
+    probe_enabled=PE_parse_boot_argn("gprobe",&probe,sizeof(probe)) && probe==1;
 	return true;
+}
+
+extern "C" void pong_panel_sample(void)
+{
+    if(!probe_enabled)return;
+    const uint64_t now=mach_absolute_time();
+    uint64_t elapsed=0;
+    if(probe_started) {
+        absolutetime_to_nanoseconds(now-probe_started,&elapsed);
+        if(elapsed>=120*NSEC_PER_SEC){probe_enabled=false;return;}
+        absolutetime_to_nanoseconds(now-probe_previous,&elapsed);
+        if(elapsed<5*NSEC_PER_SEC)return;
+    } else probe_started=now;
+    for(unsigned i=0;i<4;++i)if(probe_sampled[i] && now-probe_sampled[i]>now-probe_previous)probe_sampled[i]=0;
+    probe_previous=now;
+    const vm_offset_t gcc=probe_page(0,0x00137000);
+    if(!gcc){panel_log("K60 CADENCE: no GCC mapping; no display register reads\n");return;}
+    const uint32_t gate=probe_read(gcc,4);
+    if(gate&0x80000000u) {
+        panel_log("K60 CADENCE: GCC_DISP_AHB off=%#x; skip DISPCC/MDSS\n",gate);return;
+    }
+    const vm_offset_t dc=probe_page(1,0x0af08000),power=probe_page(2,0x0af09000);
+    if(!dc || !power){panel_log("K60 CADENCE: no DISPCC mapping; skip MDSS\n");return;}
+    const uint32_t ahb=probe_read(dc,0xa4),gdsc=probe_read(power,0);
+    if((ahb&0x80000000u) || !(gdsc&0x80000000u)) {
+        panel_log("K60 CADENCE: MDSS gate=%#x power=%#x; skip MDSS\n",ahb,gdsc);return;
+    }
+    for(unsigned i=0;i<4;++i) {
+        const vm_offset_t base=probe_page(3+i,0x0ae35000+i*4096);
+        if(!base){probe_sampled[i]=0;panel_log("K60 CADENCE: INTF%u mapping unavailable\n",i);continue;}
+        const bool previous=probe_sampled[i]!=0;
+        uint64_t span=0;
+        if(previous)absolutetime_to_nanoseconds(now-probe_sampled[i],&span);
+        const uint64_t milliseconds=span/NSEC_PER_MSEC;
+        const uint32_t frames=probe_read(base,0xac);
+        const uint32_t delta=previous?frames-probe_frames[i]:0;
+        probe_frames[i]=frames;
+        probe_sampled[i]=now;
+        if(i==1 || i==2) {
+            const uint16_t te=uint16_t(probe_read(base,0x298)>>16);
+            const uint16_t count=previous?uint16_t(te-probe_te[i-1]):0;
+            probe_te[i-1]=te;
+            panel_log("K60 CADENCE: INTF%u ms=%llu frames=%u delta=%u te=%u delta=%u auto=%#x sync=%#x\n",
+                i,milliseconds,frames,delta,unsigned(te),unsigned(count),probe_read(base,0x2b4),probe_read(base,0x288));
+        } else panel_log("K60 CADENCE: INTF%u ms=%llu frames=%u delta=%u\n",i,milliseconds,frames,delta);
+    }
 }
 
 extern "C" int pong_panel_set_brightness(uint32_t level)
