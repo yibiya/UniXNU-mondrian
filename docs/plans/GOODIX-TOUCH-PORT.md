@@ -686,3 +686,10 @@ raw arbiter status和ENXIO/EINVAL/ETIMEDOUT/EACCES/EIO。observer只写读命令
 不写任何PMIC配置寄存器。stage7读取PPID2c2的header并核对type4/sub87后，
 才读ready8/control40八字节；日志区分arbiterstatus和PMICstatus、数字电压和物理电压。
 
+
+observer镜像已构建：编译kernel`e0efc97b`，payload kernel`df0c6d07`；
+`boot-touch-supplyread-20261114.img` sha256
+`da864ab948d6a2897b8bcc11d24cb6f29af3f6e0f0719c87271c2335d18a9f88`，
+源码`ec82bc9f8ca5a5c1b24848c6d640bb2eeaef18dc`。UEFI/DTB保持原样，参数stage7。
+身份/ready/control三次observer读以真实成功status为门，失败不输出合成供电值。
+
