@@ -1,6 +1,6 @@
-# 触摸供电：SPMI 直写方案（绕过 RSC）
+# 触摸供电：未验证的SPMI候选路径
 
-> 2026-11-09 20:17。这是触摸修复当前**唯一可行的技术路径**。
+> 历史方案，不是可直接执行的寄存器配方。实际PM8350C SID2已由Android设备树确认；LDO2 raw base、APID和XNU可访问性未确认。当前固件未派发PMIC协议producer。
 
 ## 1. 问题
 
@@ -10,7 +10,7 @@ FDT 明确：触摸 VDD = `pm8350c_l2`（PM8350C 的 LDO2，1.8 V），
 **RPMh 稳压器只能通过 RPMh（RSC）写入**，而 `0x17a00000/0x17a20000`
 首读整机死（PITFALLS P-49 / HARD-RULES HR-01）。
 
-**后果**：XNU 侧无法给触摸 VDD 上电 → 芯片不应答任何 SPI 命令。
+**未确认项**：XNU未测量LDO2保留状态；SPI全00/ff不能证明供电关闭。Android侧enabled=1、1.8V不能证明bootloader/UEFI/XNU中仍保持。
 
 ## 2. 合法替代：PMIC 仲裁器（SPMI）
 
@@ -31,7 +31,7 @@ qcom,spmi@c42d000 {
 };
 ```
 
-**它与 RSC（0x17a00000）完全独立**，访问它不违反 HR-01。
+它与RSC窗口地址独立，但地址独立不证明访问安全或通道归属；没有目标映射和状态证据前不执行SPMI事务。
 
 ## 3. 实现步骤
 
@@ -44,19 +44,13 @@ qcom,spmi@c42d000 {
 ```
 注意 io_submap 预算（P-63）：每个窗口只映射实际用到的 4 KiB。
 
-### 3.2 SPMI 写命令（PMIC arbiter 通道）
-典型的 PMIC arbiter 写序列（参考 Linux `spmi-pmic-arb.c`）：
-1. 选通道：`chnls + 0x0 + 0x1000*ch` 的 `CHAN_CMD` 寄存器
-2. 写 `CHAN_CMD = (opcode << 27) | (priority << 8) | ...`
-3. 写 `CHAN_DATA` 逐字节
-4. 轮询 `CHAN_STATUS` 的 DONE 位
-5. 读 `CHAN_STATUS` 的低 8 位拿错误码
+### 3.2 执行前缺失的目标证据
 
-### 3.3 PM8350C LDO2 的 SPMI 地址
-**需要查**（不在公开 FDT 里，因为 FDT 把它建模为 RPMh VRM）：
-- SPMI slave ID（PM8350C 在 K60 上通常是 SID 4 或 5）
-- LDO2 的 base address（Linux `qcom_spmi-regulator.c` 的 `pm8350c` 表）
-- 使能寄存器偏移（通常在 base + 0x46）
+- Android实际`/sys/bus/spmi/devices/0-02/uevent`：PM8350C位于`qcom,pm8350c@2`，SID2；SID不等于UEFI logical PMIC index。
+- 尚未得到本机PM8350C LDO2 peripheral base/APID；不能从其它PMIC的L2=0x4100推导PPID0x241。
+- RPMh regulator的`ldoc2`命名和cached voltage不是SPMI物理地址。
+- observer读同样需要发命令及验证channel status；不能把任意observer地址视为无副作用内存读取。
+- 必须先得到目标来源、只读测量路径和错误语义，再考虑电源控制；不执行旧文中通用写命令配方。
 
 **来源建议**：
 1. Xiaomi 内核 `arch/arm64/boot/dts/vendor/qcom/pm8350c-regulator.dtsi`
@@ -73,9 +67,9 @@ qcom,spmi@c42d000 {
 
 | 步骤 | 成功标志 |
 |---|---|
-| SPMI 通道使能 | `CHAN_STATUS` bit0（DONE）= 1 |
-| 写 LDO2 | 回读电压 ≈ 1.8 V，或 `INT` 线变化 |
-| 触摸响应 | `goodix: chip "..." firmware "..."` |
+| 状态测量 | 目标channel、DONE/error语义和真实enable/voltage回读均有证据 |
+| 电源判断 | GPIO/IRQ电平或cached vote不足以证明1.8V物理供电 |
+| 触摸响应 | checksum-valid firmware和IC-info，随后实际down/move/up/HID |
 
 ## 6. 风险
 

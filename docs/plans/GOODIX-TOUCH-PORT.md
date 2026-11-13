@@ -614,3 +614,33 @@ Goodix公开枚举A=4/B=5/D=6：[pinned header](https://github.com/goodix/goodix
 IC-info；全0/ff、checksum错误和描述ABI错误仍拒绝。恢复reset仍2ms/100ms。
 这是协议匹配，不是把dummy数据当成功，也不增加fallback。实际应答仍待上机。
 
+
+Host实际`bring_up`控制流检查通过：transport初始化时RESET保持低，release后
+100ms读真实identity；identity失败传播，无合成成功。kernel/payload构建成功；
+`boot-touch-berlind-20261113.img` sha256
+`f5aa2f8ff0fd59c387f4f2c2aa9b4b5c0f88d7e8c47586d418c696af151f8835`，
+源码`bae9df2ed044ad85db71b19d802bd67c2057464f`，编译kernel`3d47ba01`，
+payload kernel`d80ab402`，UEFI/DTB保持原样。实际应答仍以上机日志为准。
+
+
+实际`console-20261113-203646.log`：GPIO16/17/18/19配置执行，RESET/AVDD路径
+执行，普通8-byte读在100ms后到firmware0x10014；仍只有总线默认字节，
+checksum-valid身份未出现，没有/dev/pong-touch。AA门禁已移除但不是全部根因。
+UI继续启动且实际GPU scanout完成sequence1/2/3，不能据此声称触摸成功或帧率合格。
+下一步只取实际GPIO/SPI/电源状态证据，不套用BerlinA或猜PMIC寄存器。
+
+
+## 13. GPIO-only阶段7：已知输出pad状态取证
+
+实际模块`spi_setup`前mode字段写0（0x1710），bits_per_word=8（0x1714）；
+普通read在0x1da8–0x1dd8发F1/地址4/FF3。当前frame/mode无已证明差异。
+stage7在RESET低时仅对已知CS19做101、SCLK18/MOSI17做010，恢复idle，
+记录CTL及IO的out-latch(bit1)/sampled-pad(bit0)。不驱动MISO16/IRQ21。
+原100ms启动等待不变，记录RESETrelease即时/100ms后状态和实际firmware字节。
+不是芯片ACK、供电或continuity判据；该阶段不访问GCC/SE/RSC/PMIC，不发布input。
+
+Android当前debugfs在`/dev/un_qslpi/traku_tu`，不是`/sys/kernel/debug`；
+按name确认当前regulator.28=pm8350c_l2（旧27现在是l1），enabled/1800000uV，
+regulator_summary consumer为spi0.0-vdd。cached cmd-db ldoc2=0x42c00 aux[01 2a 00 00]
+只说明VRM资源42，不是SPMI peripheral base。固件/XNU状态仍未实测。
+
