@@ -7,7 +7,6 @@
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <kern/clock.h>
-#include <kern/locks.h>
 #include <kern/thread.h>
 #include <kern/task.h>
 #include <libkern/c++/OSSharedPtr.h>
@@ -23,12 +22,12 @@
 extern "C" const uint8_t PongAdrenoGmuFirmware[];
 extern "C" const size_t PongAdrenoGmuFirmwareBytes;
 extern "C" void pong_ramoops_diagnostic_write(const char *,int);
+extern "C" void pong_rpmh_lock(void);
+extern "C" void pong_rpmh_unlock(void);
 namespace {
 struct Mapping {OSSharedPtr<IOMemoryMap> keep;uintptr_t cpu=0;size_t bytes=0;};
 struct Memory {IOBufferMemoryDescriptor *keep=nullptr;uint8_t *cpu=nullptr;uint64_t pa=0;size_t bytes=0;};
 static Mapping windows[PongGpuWindowCount],gcc,gcc_vote,gcc_branches,rsc,db;
-static LCK_GRP_DECLARE(rsc_group,"pong-rsc");
-static LCK_MTX_DECLARE(rsc_lock,&rsc_group);
 static bool tcs3_quarantined;
 static Memory cache,dummy,hfi,logmem,tables;
 static PongClockState clocks;
@@ -492,7 +491,7 @@ static void run(void *,wait_result_t)
         !map(gcc_branches,0x181000,0x1000))
         {record("SKIP resource mapping",1);return;}
     PongPowerInputs inputs={};
-    lck_mtx_lock(&rsc_lock);
+    pong_rpmh_lock();
     int mapping_status=init_power();
     PongPowerStatus input_status=PongPowerSuccess;bool voted=false;
     if(!mapping_status) {
@@ -501,7 +500,7 @@ static void run(void *,wait_result_t)
         if(!input_status)voted=vote_parents(inputs);
     }
     if(voted)parents_ready=1;
-    lck_mtx_unlock(&rsc_lock);
+    pong_rpmh_unlock();
     if(mapping_status){record("SKIP power mapping",mapping_status);return;}
     if(input_status){record("SKIP command-db",input_status);return;}
     if(!voted){record("FAIL parent votes",1);return;}
@@ -554,7 +553,7 @@ static void worker(void *parameter,wait_result_t result)
 }
 extern "C" int pong_touch_iovdd_enable(void)
 {
-    lck_mtx_lock(&rsc_lock);
+    pong_rpmh_lock();
     int result=init_power();
     if(!result) {
         PongPowerResource rail={};
@@ -562,7 +561,7 @@ extern "C" int pong_touch_iovdd_enable(void)
             db.bytes,&rail);
         result=status==PongPowerMissing?ENXIO:status?EINVAL:vote_touch(rail);
     }
-    lck_mtx_unlock(&rsc_lock);
+    pong_rpmh_unlock();
     if(result)record("touch IOVDD VRM refused",result);
     return result;
 }

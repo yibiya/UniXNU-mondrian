@@ -736,3 +736,10 @@ target mask翻译表0b0e0ed0实际为0,1,2…，owner mask4因此允许DRV2。
 primed和armed均出现，317.65s USB断开，capture末态fastboot。expiry行未抓到，
 因此定时原因由配置/时间及末态支持，不把USB断开单独当复位证明。
 
+
+首轮power修复构建失败：archive fakeroot PrivateHeaders的lock_group/lock_mtx
+省略LCK_*_DECLARE。static mutex移到kernel C Goodix TU，由内核startup初始化；
+C++调用C lock/unlock wrapper，仍同一owner锁，无per-read/per-vote分配。
+throwaway VRM控制流检查通过：two-command ACK、busy/未知值拒绝、timeout
+quarantine、retained更高电压不降低。硬件效果仍待新镜像。
+
