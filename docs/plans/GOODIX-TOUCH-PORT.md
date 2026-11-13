@@ -693,3 +693,16 @@ observer镜像已构建：编译kernel`e0efc97b`，payload kernel`df0c6d07`；
 源码`ec82bc9f8ca5a5c1b24848c6d640bb2eeaef18dc`。UEFI/DTB保持原样，参数stage7。
 身份/ready/control三次observer读以真实成功status为门，失败不输出合成供电值。
 
+
+实际`console-20261114-032407.log`190597B：observer身份/ready/control均
+err0 arb1，APID181。XNU中C200ready=0、enable=0，programmed1800mV但valid0、
+mode7、status3；Android同外设ready1/enable1/valid1800。这是数字外设供电状态
+未保留的实际证据，不再仅依据SPI00推测；电压ADC/板级continuity仍未测。
+SPI仍28字节全00，用户确认无触摸。实体power键有真实down/up，up/down键
+peripheral资格通过；本轮不能把driver45fps称为可见显示合格。
+
+
+用户要求后续boot必须自动复位、明早检查成果：board默认k60_autoreset=300，
+使用现有0334b独立内核线程和fastboot restart priming；不新增watchdog，
+仍只fastboot boot。正常输入配置仍stage6，stage7是明确不发布input的取证路径。
+

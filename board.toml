@@ -181,10 +181,11 @@ kernel_args = [
   "xpcproxy_idversion=1",
   "k60_entitlement_allow=1", "k60_skip_iosurface=1", "k60_panic_reset=1",
   "k60_init_blob=1", "k60_launchd_cache=1",
-  "k60_autoreset=0",
-  # Touch stage 6 publishes /dev/pong-touch only after the chip answered the
-  # boot-option handshake and accepted the config package. The applog pair was
-  # dropped to stay inside the 608-byte arm64 boot-args limit; SpringBoard's own
+  # Unattended temporary boots return to fastboot after300s via0334b.
+  "k60_autoreset=300",
+  # Touch stage6 publishes only after checksummed firmware/IC-info and config.
+  # Startup matches actualBerlinD RESET/100ms; there is no8AA prerequisite.
+  # The applog pair was dropped to stay inside the608-byte arm64 argument limit;
   # os_log output is unaffected.
   "k60_touch_se=6",
   # Adreno stage B (docs/plans/GPU-ENABLE-PLAN.md 4.4). Stage A ran on the board
