@@ -771,3 +771,11 @@ RGB 探针：23 个窗口、4326 次已完成 GPU 拷贝，大多数窗口源/�
 backboardd 120秒表：7151 次完成，平均13587us；SpringBoard 未产生 Metal commands。
 这些证据不支持把 shader 编译或拷贝成本直接断言为约1fps主因。
 
+
+修复 Host 行为检查：完整 policy 函数在内存/dispatch 合同夹具执行，五个 initializer
+按同步 API 完成、flag 被置零、重复调用不再初始化；无效 bool、读取失败、不可写
+和 block invoke 错误均保留拒绝。夹具不替代实际20G81初始化器执行。
+插件重链接、kernel/payload 构建成功；`gpuJ` image sha256
+`6f343d49455448ebe92206be96f013c77eae0f28fa06aca1657488a5ed667d5e`，
+编译 kernel `7a077e12`，payload kernel `3a113d6a`，等待实际策略成功和交互证据。
+
