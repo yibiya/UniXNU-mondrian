@@ -52,16 +52,15 @@ qcom,spmi@c42d000 {
 - observer读同样需要发命令及验证channel status；不能把任意observer地址视为无副作用内存读取。
 - 必须先得到目标来源、只读测量路径和错误语义，再考虑电源控制；不执行旧文中通用写命令配方。
 
-**来源建议**：
-1. Xiaomi 内核 `arch/arm64/boot/dts/vendor/qcom/pm8350c-regulator.dtsi`
-2. Linux `drivers/regulator/qcom_spmi-regulator.c` 的 `pm8350c_regulators[]`
-3. 或读 Android 侧 `/sys/kernel/debug/regulator/` 看 LDO2 的 SPMI 地址
+**来源边界**：MiCode mondrian-s-oss目前可取得的FDT/cmd-db只确认RPMh资源；
+尚无本机PM8350C LDO2 SPMI peripheral表。Android debugfs实际挂载点为
+`/dev/un_qslpi/traku_tu`；regulator_summary/sysfs不能补出raw base。
 
 ## 4. 替代方案（更简单，但可能不可行）
 
-**直接读 SPMI**：PMIC arbiter 的 `obsrvr` 窗口可以做只读监听，
-也许能看到 RPMh 之前写过的 LDO2 配置。如果能读到"已开启"，说明 ABL 已经上电，
-那问题就回到 SPI 本身而不是供电。
+Observer路径不是被动监听：它发起SPMI读命令，并需要目标PPID/APID、
+权限和status/error证据。已工作的UEFI keypad observer只证明PON/GPIO路径，
+不能据此读取尚未识别的LDO2。当前不执行任何猜测的PMIC事务。
 
 ## 5. 判据
 
