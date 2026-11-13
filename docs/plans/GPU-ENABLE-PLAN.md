@@ -746,3 +746,10 @@ scanout worker 仍只在 backboardd 创建。没有测试绘制或新的刷新�
 真实完成之后、送出 completion 之前执行，保持映射仍有效。256 点不覆盖所有像素，
 不能证明整帧正确或物理 panel latch；用于区分上游内容、拷贝边界和面板消费问题。
 
+
+Host 验证：实际 `sampleRgb` 函数编译执行，带 padding 行、alpha-only 不变化、
+RGB 变化和越界拒绝通过。插件以真实 iPhoneOS SDK 重链接（NOUNDEFS），kernel/payload
+构建成功；boot args 实际 604 B。`gpuI` 镜像 sha256
+`85822ece66a3d5cdab138ff67ffcfd263a8d70088f397cbb2b9342d3136ba535`，
+payload kernel `5bc29dbc`，编译内核 `4df14bb1`，保留 gpuH 的 UEFI/kernel slot。
+
