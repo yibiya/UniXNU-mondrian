@@ -836,3 +836,8 @@ readback及后续真实hardware frame delta/ms。正常boot可修复，不依赖
 未知状态不改，不关TE/不改频率/不抢其它INTF。整个取证窗口最多120s。
 
 
+Host scoped控制流检查通过：无计数前进、clock关闭、sync未知、autorefresh未知
+均不写；只精确继承值8000003c一次改count1，后续hardwaredelta验证后停止。
+该throwaway检查不等于显示硬件效果，仍待下一轮真机计数/readback。
+
+

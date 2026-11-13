@@ -782,3 +782,10 @@ say使用现有kern.pong_diagnostic，失败才stderr；打印真实initializer/
 digitizer register/readloop/dispatch错误与结果，不生成假手指或键事件。
 使用userland/build.py ui现有编译+embed流程刷新0340，供下一轮内核部署。
 
+
+HID+panel修复已构建：UI113552B sha16d47ae4，embed与0340逐字节一致；
+`boot-hid-panel-20261114.img` sha256
+`93cbaf977bb3f649062eb6a151f114c1836573ce2a6eb7e3198e5f30473519be`，
+compiled23a82043、payload ec42aa8d、源码ef2389b608ecf85aafb33e56cfb1192d3a2ec8f7。
+正常stage6、gprobe1、autoreset300，UEFI/DTB不变；实际HID打开/面板counter效果待capture。
+
