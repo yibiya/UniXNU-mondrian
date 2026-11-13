@@ -771,3 +771,14 @@ COORD-MODE均ACK80。stage6真实驱动ready并发布设备，不再停SPI默认
 网络/蓝牙/音频/电量无可安全打开的额外switch；battery代码已编译但实际
 PAS1/exclusiveGLINK handoff缺失阻止publication，保持真实资格门不补假电量。
 
+
+## 16. HID消费者依赖与实际日志
+
+旧113472B UI blob确实含touch.c且BackBoardconstructor调用pong_touch_start，
+但没有IOKit依赖，使用RTLD_DEFAULT解析HID；失败仅写stderr，因此console无HID
+行不能证明未调用。显式dlopen真实IOKit并从handle解析，保持handle供workers使用。
+真实20G81cache image table确认IOKit owner；实际导出/API资格仍由下轮runtime验证。
+say使用现有kern.pong_diagnostic，失败才stderr；打印真实initializer/devfs open/
+digitizer register/readloop/dispatch错误与结果，不生成假手指或键事件。
+使用userland/build.py ui现有编译+embed流程刷新0340，供下一轮内核部署。
+

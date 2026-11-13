@@ -820,3 +820,19 @@ Host 控制流检查：GCC关闭、DISPCC关闭、GDSC关闭均不读MDSS，正�
 PresentOnly设备检查均无匹配设备。未发送boot镜像、没有gpuK真机日志或MDSS读数。
 需要设备回到fastboot并恢复USB连接，随后只用 `fastboot boot` 继续此探针。
 
+### 7.12 实测INTF1约1Hz：纠正继承的autorefresh分频
+
+`console-20261114-042106.log`：INTF1 frame2027→2067/39428ms、2067→2128/
+60012ms，autorefresh8000003c、sync180064。其它INTF未运行；GPUcopy正常。
+[Qualcomm-authored SM8475镜像](https://github.com/crdroidandroid/android_kernel_xiaomi_sm8475-modules/blob/98f72d675c093d88eab7bbe1162da725c580a428/qcom/opensource/display-drivers/msm/sde/sde_hw_intf.c#L675-L711)
+明确INTF-relative2b4 bit31enable/low16frame_count，硬件setter直接写count；
+[connector注释](https://github.com/crdroidandroid/android_kernel_xiaomi_sm8475-modules/blob/98f72d675c093d88eab7bbe1162da725c580a428/qcom/opensource/display-drivers/msm/sde/sde_connector.c#L36-L37)
+明确每FRAME_CNT帧刷新。该来源不是已确认匹配K60 stock release，目标值则来自本机读数。
+count60与约1Hz一致；不是提高GPU处理fps或宣称面板120Hz。
+
+只在已有时钟/电源guard通过、DSIcommand2.x运行、INTF1计数真实前进、sync180064、
+auto精确8000003c时，执行一次low16=1，保留bit31及其它bit；write barrier后记录
+readback及后续真实hardware frame delta/ms。正常boot可修复，不依赖gprobe开关；
+未知状态不改，不关TE/不改频率/不抢其它INTF。整个取证窗口最多120s。
+
+
