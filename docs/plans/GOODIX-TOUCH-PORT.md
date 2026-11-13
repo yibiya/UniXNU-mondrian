@@ -644,3 +644,15 @@ Android当前debugfs在`/dev/un_qslpi/traku_tu`，不是`/sys/kernel/debug`；
 regulator_summary consumer为spi0.0-vdd。cached cmd-db ldoc2=0x42c00 aux[01 2a 00 00]
 只说明VRM资源42，不是SPMI peripheral base。固件/XNU状态仍未实测。
 
+
+Host bounded-pad控制流检查通过：只写19/18/17，RESET保持低，CS在CLK/MOSI
+检查时保持高，最后恢复CS高/CLK低/MOSI低。内核构建成功`f8683700`，
+payload kernel`8a9c9f88`；实际FAT参数只有`k60_touch_se=7`，无残留6。
+`boot-touch-padprobe-20261114.img` sha256
+`5622eb59cc1eebfa82f570c89372648b8e262c06d7511250d2ddc235c2d754fc`，
+源码`3cf75ef30dba317baa637291ed692b742a258603`，UEFI/DTB未改。
+
+TOML evidence中历史JSON冒号已修为inline-TOML等号，文件解析通过。
+`scripts/check-porting-paths.py --quiet`仍报5012未认领路径（包括XNU源码/headers），
+不是触摸协议结果；没有为掩盖检查而增添宽泛路径认领。
+
