@@ -664,3 +664,25 @@ CS19 IO=3/0/3，SCLK18/MOSI17 IO=0/3/0，证明这些pad的sampled输入跟随
 这排除了本轮GPIOpad不翻转/RESET未释放；不证明板级continuity或IOVDD保留。
 capture在310.85s读错误后回fastboot，后续ADB已恢复Android。
 
+
+## 14. 只读SID2:C200 observer：测XNU中的真实数字状态
+
+Android当前单外设读：C200header00030101048700、statusC208=87，C240/41和
+C242/43均0807（1800mV），mode07、enable80。这是实际LDO，不是空总线；
+raw APPS RW地址映射返回EPERM，不说明RPMh投票权限或具体owner。
+QTI源码`qti-regmap-debugfs.c`507–511确认address/count只改debugmetadata，
+只有写data才调用regmap_write；本轮没有data写且恢复metadata。
+
+actualAOP sha`b3c2fc3e8255a9ceb673c8af0ff96b45dcf93e24d4b9906e8546c4b26aecf69f`、
+config sha`0a3fbde21eb78060fdb2caf462ee88e4b63aed67d6ec67fde20cc5ee64c0f950`。
+config CRC目录LDO_NUM(e7b5f30e)的PMICslot2 count13；LDO_RSRC(0990fd58)
+slot2包含NULL,ldoc1,ldoc2…ldoc13。实际AOP80822010按firstbase/stride100索引；
+资源consumer8081ccb2–ccb6确实用index+1取name。C200对应ldoc2仍标为推断，
+不把Android读header等同于AOP启动时检测接受，也不推断UEFI/XNU电源保留。
+
+复用physical-keys patch的observer，lazy初始化独立于按键线程，mutex串行化。
+新增内部pong_spmi_find/read，按键迁移同backend；success外不输出data，保留
+raw arbiter status和ENXIO/EINVAL/ETIMEDOUT/EACCES/EIO。observer只写读命令，
+不写任何PMIC配置寄存器。stage7读取PPID2c2的header并核对type4/sub87后，
+才读ready8/control40八字节；日志区分arbiterstatus和PMICstatus、数字电压和物理电压。
+
