@@ -679,3 +679,26 @@ managed 窗口自 `physBase 0x900000000` 起 4864 MiB（`K60RV` 同时报
 - `arm_vm_init` 的 `K60 FB:` 行本身就在串口可用之前打印，物理上收不到。
 
 所以这一项**只能靠板上运行** `boot-gpuA-20261112.img` 后读 `K60FB` 行，这也是把判定改接到 `K60RV` 通道的原因。
+
+### 7.7 部署修复：scratch、目录类型与挂载门
+
+`gpuF` 的 `console-20261113-112351.log` 实测 `files=0/6 error=20`，不是 GPU 执行失败。
+`0610` 原实现把 `0x400` 当用户地址交给 `copyout`，而同树 `0401` 的工作先例使用
+`native_owner_data_prepare(p, scratch)` 的真实映射加偏移。目录错误随后被文件打开覆盖。
+
+- 部署改由 ADDON 在 Data 设备、APFS 类型、读写标志校验后调用，传递 `p, scratch`。
+- 使用 `<sys/sysproto.h>` 的 `mkdir`/`unlink`，每次失败都停止。只恢复本部署固定路径上
+  **root 所有、零长度、普通文件** 的旧 `O_CREAT` 残留；符号链接和非空文件不删除。
+- 发布种子与 bundle 同置 `/private/var/ngpu/addons`，只读 union 后才出现在 Extensions。
+  重写开始先写 publication=0，六个文件全部成功后才最后写 publication=1。
+- ADDON 运行门改为已传入的 `pong_gpu_scanout=1`，不额外挤占 boot args；不覆盖 LaunchDaemons。
+- blob 长度包含所有 8 字节对齐填充；C/汇编序列化同源。`K60_METAL_PLUGIN_DIR` 缺失立即拒绝构建。
+
+离线验证：218 条 series 在干净 XNU HEAD 上严格 `git apply` 通过；小型非对齐输入经
+真实 ARM64 汇编后逐字节与 C 容器相同，末尾长度正确。三个部署 Mach-O 的 CodeDirectory
+均为 4 KiB，逐页哈希无不符。构建复用缓存 kernelcache，避免前一轮的 HTTPS 超时。
+
+板上验收依次是 `K60METAL deploy files=6/6 error=0`、
+`K60ADDON Extensions stage=5 error=0`、真实 GPU frame/copy completed。
+上机前不宣称目录、bundle 加载或 GPU 上屏已成功。
+
