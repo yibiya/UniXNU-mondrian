@@ -779,3 +779,11 @@ backboardd 120秒表：7151 次完成，平均13587us；SpringBoard 未产生 Me
 `6f343d49455448ebe92206be96f013c77eae0f28fa06aca1657488a5ed667d5e`，
 编译 kernel `7a077e12`，payload kernel `3a113d6a`，等待实际策略成功和交互证据。
 
+
+`gpuJ` 真机日志 `console-20261113-181705.log`（199937 B）：backboardd 与 SpringBoard
+均输出 policy active status0，cached flags changed=0。五个策略 flag 本来已关闭，
+所以此次修复消除了假失败，但没有切换渲染路径，不能作为可见帧率根因。
+RGB 4435 次采样：源变化1356、目标1350、9次不匹配、1522次拷贝期源变化；
+后段 51 个显示事务/s、拷贝约14.5ms，仍不代表面板新画面/s。保留这些证据，
+下一步只读 DPU/DSI 真实帧/TE/触发状态，不凭软件节拍改面板档位。
+
