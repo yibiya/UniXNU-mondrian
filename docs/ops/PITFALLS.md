@@ -1059,43 +1059,19 @@ DYLD_FALLBACK_LIBRARY_PATH=/usr/lib
 - **30 秒判定**：新 stage 一上机就 0 日志 → 先查它是否漏过了某个危险调用，
   而不是怀疑新功能本身。
 
-### P-70 **K60 触摸 SPI 引脚角色：MISO 是 GPIO 17，不是 16**
+### P-70 **00/ff GPIO采样不能证明SPI引脚角色**
 
-- **背景**：FDT 的 `qupv3_se4_spi_active` 只给出引脚**集合**
-  `pins = "gpio16\0gpio17\0gpio18\0gpio19"`（function `qup4`），
-  **没有说明**哪个是 MISO / MOSI / CLK / CS。
+- 旧24排列记录得到两组ff，其余00；这只证明某次输入电平，不证明MISO、
+  外部连接、供电或成功SPI事务。此前据此选17/18/16/19并声称MISO17错误。
+- SM8475/SM8475P Data Sheet80-27620-1 Rev.AJ Table2-4 printed p44
+  明确QUP[4]：GPIO16=MISO、17=MOSI、18=SCLK、19=CS0。
+  来源：[Qualcomm文档第三方镜像](https://www.scribd.com/document/995754119/80-27620-1-AJ-SM8475-SM8475P-Data-Sheet)，
+  非已认证官方下载；Xiaomi mondrian-s-oss pinctrl-cape.h确认这些pads的qup4 mux。
+- `board.toml`按MISO/MOSI/SCLK/CS发16/17/18/19；不要用通用QRB5165互相
+  矛盾的lane表覆盖目标芯片表。`gpio-offset=0x100000`仍必须保留。
+- 判据：boot-option0x10000的8×AA实际写入/读回一致、芯片ID和IC-info校验通过，
+  然后才接受触点。读全00/ff本身不能判断错的是引脚、时序还是供电。
 
-- **我们原来的假设（来自 pong 参考实现，从未核对）**：
-  `MISO=16, MOSI=17, CLK=18, CS=19`
-
-- **实测（24 种排列一次扫描，`evidence/usblog-20261109-195627`，内核 `7bfc16a4`）**：
-  ```
-  PERM0  miso=16 mosi=17 clk=18 cs=19  -> 00 00 00 00
-  PERM7  miso=17 mosi=16 clk=19 cs=18  -> ff ff ff ff   ★
-  PERM8  miso=17 mosi=18 clk=16 cs=19  -> ff ff ff ff   ★
-  其余 22 种                            -> 00 00 00 00
-  ```
-  **两个 `ff` 的共同点是 `miso=17`** → **MISO 实际在 GPIO 17**。
-
-- **`ff ff ff ff` 的意义**：MISO 被拉高。SPI 空闲态（CS 未选中或芯片未驱动）
-  通常是**高电平**，说明这条线**终于连到芯片侧**了；而 `00` 说明那条线根本不是 MISO
-  （悬空被拉低或接错）。
-
-- **修正**：`pins[]` 的 MISO/MOSI 位置需要交换：
-  ```c
-  // 原（错）：MISO=pins[0]=16, MOSI=pins[1]=17
-  // 新（对）：MISO=pins[1]=17, MOSI=pins[0]=16
-  ```
-  剩余 CLK/CS 还需在 `miso=17` 的 6 种组合里确认（PERM6 `mosi=16 clk=18 cs=19`
-  最符合 Qualcomm 标准顺序）。
-
-- **通用教训**：
-  **FDT 的 pinctrl `pins` 属性只保证"这四根线属于这个 SE"，不保证顺序。**
-  在写 bitbang 或手搓 SPI 前，必须用排列扫描（24 种）实测确定角色，
-  不能从别的板子照抄。一次扫描就能省掉多轮猜测。
-
-- **30 秒判定**：bitbang 读全 `00` → MISO 选错；读全 `ff` → MISO 大概率对了，
-  但芯片没响应（需查 CS/CLK 或供电）。
 
 ### P-71 **Android v4 的 header_size 不是 kernel 起点**
 

@@ -573,3 +573,17 @@ bit11未置位，因此此板上eGPIO条件启用未改变ownership，不能当�
 AVDD71 IO=3仅证明GPIO电平，不证明IOVDD1.8V。下一步需要XNU中实际LDO2状态或
 独立的SPI角色证据；不重复相同镜像、不把GPIO电平当供电测量。
 
+
+## 11. 2026-11-13：SM8475引脚表纠正旧排列推断
+
+[SM8475/SM8475P Data Sheet80-27620-1 Rev.AJ](https://www.scribd.com/document/995754119/80-27620-1-AJ-SM8475-SM8475P-Data-Sheet)
+Table2-4 printed p44直接列出QUP[4]：GPIO16=L0/MISO，17=L1/MOSI，18=L2/SCLK，
+19=L3/CS0；pin定义C30/E29/C31/D31分别对应这四个lane。
+这是Qualcomm文档的第三方镜像，不是已认证官方下载；不依赖通用QRB5165文档
+互相矛盾的MISO/MOSI表。[Xiaomi mondrian-s-oss pinctrl-cape.h](https://github.com/MiCode/Xiaomi_Kernel_OpenSource/blob/mondrian-s-oss/drivers/pinctrl/qcom/pinctrl-cape.h#L1641-L1648)
+独立确认16–19的qup4 function slot1与正确寄存器布局。
+
+旧元组17/18/16/19错误；00或ff只表示某次采样电平，不证明MISO或成功事务。
+修改ADT元组为16/17/18/19，只重建payload并沿用`boot-touch-reset`的同一内核。
+不改电源/频率/时序，不扫描排列；AA读回和checksum有效ID是下一轮判据。
+
