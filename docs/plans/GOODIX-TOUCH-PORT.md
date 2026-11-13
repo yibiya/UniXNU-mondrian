@@ -532,3 +532,23 @@ Pong touch HID: type=1 finger=0 xy=...
 5. `feat(touch): wire the 20G81 userland HID bridge`——如果 `libpong-ui.dylib` 还没有在 K60 root 中自动启动 `pong_touch_start()`，补 `userland/touch.c` 的启动接线。
 
 前两步做完就可以上 P1；不要等固件加载和 kernel HID 都完成才做第一次只读 ID。
+
+## 10. 2026-11-13：初次握手失败与源码差异
+
+以当前 `gpuJ` 日志为准：`SE4 fw=0x102 protocol1 interfaces1`，FIFO不可用后
+实际GPIO SPI握手读回00三次；不再是cand15的metadata缺失。Android实读
+BERLIN/9916R、05800263；按名称找到pm8350c_l2已启用1800000uV（本轮regulator.27）。
+debugfs确认RESET20输出高、IRQ21输入高、AVDD71输出高。`/dev/mem`不存在；
+调试GPIO文本不暴露eGPIO ownership，不能由它声称XNU已控制pad。
+
+[Cape头文件](https://github.com/NothingOSS/android_kernel_msm-5.10_nothing_sm8475/blob/sm8475/t/drivers/pinctrl/qcom/pinctrl-cape.h#L13-L55)
+确认1MiB GPIO偏移正确；[msm_pinmux_set_mux](https://github.com/NothingOSS/android_kernel_msm-5.10_nothing_sm8475/blob/sm8475/t/drivers/pinctrl/qcom/pinctrl-msm.c#L241-L248)
+在bit11 present时置bit12启用APPS。当前驱动补此条件操作并打印cfg前/后与io，
+保留其他位；不清bit12、不再扫描未验证的引脚排列。
+
+Linux v6.12 `goodix_berlin_core.c:247-279` 初次上电：IOVDD→3ms→AVDD→15ms→
+释放RESET→4ms→八字节AA握手→100ms，再读固件。当前驱动此前先release+100ms，
+随后才配置SPI；改为RESET保持低直到现有transport准备完成，再按原协议握手。
+恢复reset仍保留low2/high100ms。该顺序来源证明时序差异，不证明9916R有硬4ms截止。
+GPIO角色17/18/16/19仍未由成功握手证明，若仍失败必须看真实pad/供电读数。
+
