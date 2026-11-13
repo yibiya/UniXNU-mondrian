@@ -743,3 +743,12 @@ C++调用C lock/unlock wrapper，仍同一owner锁，无per-read/per-vote分配�
 throwaway VRM控制流检查通过：two-command ACK、busy/未知值拒绝、timeout
 quarantine、retained更高电压不降低。硬件效果仍待新镜像。
 
+
+kernel/payload构建成功：compiled323b97f2、payload34122d3e；
+`boot-touch-iovdd-20261114.img` sha256
+`42169c41ddff31df09eb509f4dd76a0228a44e75c8ecd97c92540d37439f7035`，
+源码`e72c735ba84b4cdc357209c2b5932542207f9aa9`。UEFI/DTB不变。
+参数stage6/gprobe1/autoreset300，606byte，未超607字符限制。目标parser
+throwaway检查通过exactidentity/aux/duplicate/overlap/slave边界；VRM事务检查
+通过realACK、busy拒绝、未知电压拒绝、timeoutquarantine和retained电压不降低。
+
