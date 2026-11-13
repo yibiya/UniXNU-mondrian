@@ -815,3 +815,8 @@ Host 控制流检查：GCC关闭、DISPCC关闭、GDSC关闭均不读MDSS，正�
 `dbfa2129bfd1f4161d217748fda40d65d5f1b148e35223718af136de788aa1f4`，
 编译kernel `34e11c77`，payload kernel `f2222512`，插件沿用已验证gpuJ。
 
+
+`gpuK`上机等待120秒返回 `TIMEOUT-NO-FASTBOOT`；随后的fastboot/adb及Windows
+PresentOnly设备检查均无匹配设备。未发送boot镜像、没有gpuK真机日志或MDSS读数。
+需要设备回到fastboot并恢复USB连接，随后只用 `fastboot boot` 继续此探针。
+
