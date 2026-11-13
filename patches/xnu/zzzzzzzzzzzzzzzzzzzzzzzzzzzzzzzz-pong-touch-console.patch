@@ -16,7 +16,7 @@ new file mode 100644
 index 0000000..b033b90
 --- /dev/null
 +++ b/bsd/dev/pong_goodix.c
-@@ -0,0 +1,1302 @@
+@@ -0,0 +1,1303 @@
 +/* Goodix Berlin-D on Redmi K60 / SM8475. Adapted from HackiOS
 + * redwood_goodix.c (APSL 2.0) and the Pong driver. Board resources come
 + * from the K60 live FDT; Berlin framing follows the Linux transport. */
@@ -758,7 +758,8 @@ index 0000000..b033b90
 +    uint32_t length, offset;
 +    touch_address = command_address = fw_buffer_address = 0;
 +
-+    if (!goodix_dev_confirm()) return false;
++    /* Device confirm belongs to initial power-on; recovery reads identity
++     * after its full boot wait, without rewriting the ROM boot option. */
 +    if (!goodix_read(GOODIX_FW_VERSION, version, sizeof(version))) {
 +        printf("goodix: firmware-version SPI transfer failed at %#x\n", GOODIX_FW_VERSION);
 +        return false;
