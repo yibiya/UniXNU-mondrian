@@ -809,3 +809,9 @@ DISPCC0xaf080a4的MDSS AHB和0xaf09000的GDSC。时钟bit31必须为0，电源bi
 `gprobe=1`完成GPU拷贝后最多120秒、每5秒读计数，独立映射4KiB页；不写DPU/DSI，
 不改面板频率。frame/TE delta按32/16位模减法记录，首样本只给raw。
 
+
+Host 控制流检查：GCC关闭、DISPCC关闭、GDSC关闭均不读MDSS，正常计数delta和
+120秒停止通过（仅MMIO夹具，不替代上机）。kernel/payload构建成功，`gpuK` sha256
+`dbfa2129bfd1f4161d217748fda40d65d5f1b148e35223718af136de788aa1f4`，
+编译kernel `34e11c77`，payload kernel `f2222512`，插件沿用已验证gpuJ。
+
