@@ -1,7 +1,7 @@
 diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
-@@ -7392,6 +7392,81 @@
+@@ -7392,6 +7392,88 @@
  	__asm__ volatile("" : : "r"(status), "r"(authorized) : "memory");
  }
  
@@ -68,6 +68,13 @@ diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
 +	if (!PE_parse_boot_argn("pong_gpu_scanout", &enabled, sizeof(enabled)) || enabled != 1) {
 +		return;
 +	}
++	vnode_t data_root = NULLVP;
++	int data_error = vnode_lookup("/private/var", 0, &data_root, vfs_context_current());
++	if (data_error) return;
++	int readonly = (vfs_flags(vnode_mount(data_root)) & MNT_RDONLY) != 0;
++	vnode_put(data_root);
++	if (readonly) { printf("K60ADDON read-only Data; deployment skipped\n"); return; }
++
 +	extern int k60_metal_deploy(proc_t, user_addr_t);
 +	int error = k60_metal_deploy(p, scratch);
 +	printf("K60ADDON deploy error=%d\n", error);
@@ -83,9 +90,8 @@ diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
  static int
  native_owner_cache_prepare(proc_t p, user_addr_t scratch, user_addr_t *envp)
  {
-@@ -8140,6 +8215,7 @@
--	if (actual != device ||
-+	if (actual != device || (vfs_flags(data_mount) & MNT_RDONLY) ||
+@@ -8140,6 +8222,7 @@
+ 	if (actual != device ||
  	    strcmp(vfs_statfs(data_mount)->f_fstypename, "apfs")) error = EINVAL;
  	if (!error) native_owner_data_stage = 4;
 +	if (!error) native_gpu_addon_prepare(p, scratch);

@@ -698,7 +698,15 @@ managed 窗口自 `physBase 0x900000000` 起 4864 MiB（`K60RV` 同时报
 真实 ARM64 汇编后逐字节与 C 容器相同，末尾长度正确。三个部署 Mach-O 的 CodeDirectory
 均为 4 KiB，逐页哈希无不符。构建复用缓存 kernelcache，避免前一轮的 HTTPS 超时。
 
-板上验收依次是 `K60METAL deploy files=6/6 error=0`、
-`K60ADDON Extensions stage=5 error=0`、真实 GPU frame/copy completed。
-上机前不宣称目录、bundle 加载或 GPU 上屏已成功。
+`gpuG` 真机 `console-20261113-133222.log`（190388 B）完成验收链：
+
+- 333 行仅移除此前错误部署留下的空普通文件 `PongAdrenoMetal.bundle`；341 行部署 `6/6 error=0`。
+- 344 行 Extensions `stage=5 error=0`，原系统条目和插件条目同时可见。
+- 998–1012 行 backboardd 创建真实 Vulkan-backed device，scanout worker ready。
+- 1411、1448、1576 行 GPU sequence 1、2、3 完成，用户态各有一次 matching copy completed。
+  内核重复日志不计为额外帧；未出现 DMA quarantine。
+
+用户实测：画面明显改善，但可见刷新约 **1 fps**。日志后段 7–15 fps 是驱动处理帧率，
+不能替代面板实测。50–63 ms 驱动耗时、decoded-image policy 错误、能力查询缺项及
+映射告警仍待定位；保留 gpuG 有效基线和 CPU 回退，不用提高 fb_hz 或伪造 fence 解决。
 
