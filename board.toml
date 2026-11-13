@@ -206,8 +206,9 @@ kernel_args = [
   # panel stays the kernel text console, which is the opposite of a handoff.
   # k60_fontscale left with pong_metal for the same reason - it only sized the
   # kernel's own text console, which no longer owns the panel - and it is what
-  # keeps this list inside the limit. 602 of 608 bytes.
-  "pong_adreno_start=1", "pong_gpu_scanout=1", "pong_metal=1",
+  # keeps this list inside the limit. gprobe samples RGB cadence for 120 s;
+  # it changes no rendering policy. 604 bytes before the terminating NUL.
+  "pong_adreno_start=1", "pong_gpu_scanout=1", "pong_metal=1", "gprobe=1",
 ]
 # All eight CPUs. The AppleARMCPU device-tree validation that required a
 # single-CPU ADT is bypassed by the kext patch on _validateConfiguration, and the
