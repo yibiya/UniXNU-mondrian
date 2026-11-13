@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/bsd/dev/k60_metal.c
-@@ -0,0 +1,219 @@
+@@ -0,0 +1,192 @@
 +/*
 + * 0610: deploy the Adreno Metal plugin onto the Data volume.
 + *
@@ -31,6 +31,7 @@
 +#include <sys/systm.h>
 +#include <sys/proc.h>
 +#include <sys/namei.h>
++#include <sys/fcntl.h>
 +#include <pexpert/pexpert.h>
 +
 +extern const unsigned char k60_metal_blob[];
@@ -59,57 +60,29 @@
 +}
 +
 +/* Create every directory on the way to path, ignoring EEXIST. */
++/* 0398 creates /private/var/ngpu and its addons/ and daemons/ subdirectories
++ * in the same prepare step, before this runs; the deploy only has to make sure
++ * the bundle directory itself exists. mkdir has no prototype any shipped header
++ * declares, so use the vnode path that 0340 already compiles against. */
 +static int
-+k60_metal_mkdirs(const char *path, vfs_context_t ctx)
++k60_metal_mkdir(const char *path, vfs_context_t ctx)
 +{
-+	char scratch[256];
 +	vnode_t vp = NULLVP;
-+	size_t length;
-+	int error;
++	int error = vnode_lookup(path, 0, &vp, ctx);
 +
-+	length = strlen(path);
-+	if (length == 0 || length >= sizeof(scratch)) {
-+		return ENAMETOOLONG;
-+	}
-+	memcpy(scratch, path, length + 1);
-+
-+	for (char *slash = scratch + 1; *slash != '\0'; slash++) {
-+		if (*slash != '/') {
-+			continue;
-+		}
-+		*slash = '\0';
-+		error = vnode_lookup(scratch, 0, &vp, ctx);
-+		if (error == 0) {
-+			vnode_put(vp);
-+			vp = NULLVP;
-+		} else if (error == ENOENT) {
-+			error = vnode_open(scratch, O_CREAT | O_DIRECTORY,
-+			    0755, 0, &vp, ctx);
-+			if (error == 0) {
-+				vnode_close(vp, 0, ctx);
-+			} else if (error != EEXIST) {
-+				return error;
-+			}
-+		} else {
-+			return error;
-+		}
-+		*slash = '/';
-+	}
-+
-+	/* The loop only walks separators, so the last component still has to be
-+	 * created; without this /private/var/ngpu itself never exists. */
-+	error = vnode_lookup(scratch, 0, &vp, ctx);
 +	if (error == 0) {
 +		vnode_put(vp);
-+	} else if (error == ENOENT) {
-+		error = vnode_open(scratch, O_CREAT | O_DIRECTORY, 0755, 0, &vp, ctx);
-+		if (error == 0) {
-+			vnode_close(vp, 0, ctx);
-+		} else if (error == EEXIST) {
-+			error = 0;
-+		}
++		return 0;
 +	}
-+	return error;
++	if (error != ENOENT) {
++		return error;
++	}
++	error = vnode_open(path, O_CREAT, 0755, 0, &vp, ctx);
++	if (error) {
++		return error;
++	}
++	vnode_close(vp, 0, ctx);
++	return 0;
 +}
 +
 +int
@@ -137,10 +110,10 @@
 +	}
 +
 +	ctx = vfs_context_current();
-+	if (k60_metal_mkdirs(K60_METAL_ROOT, ctx) == 0) {
-+		(void) k60_metal_mkdirs(K60_METAL_ROOT "/addons", ctx);
-+		(void) k60_metal_mkdirs(K60_METAL_ROOT "/daemons", ctx);
-+	}
++	(void) k60_metal_mkdir(K60_METAL_ROOT, ctx);
++	(void) k60_metal_mkdir(K60_METAL_ROOT "/addons", ctx);
++	(void) k60_metal_mkdir(K60_METAL_ROOT "/daemons", ctx);
++	(void) k60_metal_mkdir(K60_METAL_ROOT "/addons/PongAdrenoMetal.bundle", ctx);
 +
 +	for (index = 0; index < count; index++) {
 +		const unsigned char *entry = blob + 8 + index * 10;
@@ -196,7 +169,7 @@
 +				continue;
 +			}
 +			*slash = '\0';
-+			(void) k60_metal_mkdirs(path, ctx);
++			(void) k60_metal_mkdir(path, ctx);
 +			*slash = '/';
 +		}
 +
