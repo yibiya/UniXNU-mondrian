@@ -1069,8 +1069,8 @@ DYLD_FALLBACK_LIBRARY_PATH=/usr/lib
   非已认证官方下载；Xiaomi mondrian-s-oss pinctrl-cape.h确认这些pads的qup4 mux。
 - `board.toml`按MISO/MOSI/SCLK/CS发16/17/18/19；不要用通用QRB5165互相
   矛盾的lane表覆盖目标芯片表。`gpio-offset=0x100000`仍必须保留。
-- 判据：boot-option0x10000的8×AA实际写入/读回一致、芯片ID和IC-info校验通过，
-  然后才接受触点。读全00/ff本身不能判断错的是引脚、时序还是供电。
+- 判据：实际9916R的Berlin-D启动等待100ms后，芯片ID和IC-info校验通过，
+  然后才接受触点。该Android模块无8×AA上电门禁；读全00/ff不能判断引脚、时序或供电。
 
 
 ### P-71 **Android v4 的 header_size 不是 kernel 起点**

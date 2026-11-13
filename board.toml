@@ -304,5 +304,5 @@ pins = "100000001100000012000000130000001500000014000000"
 # Table2-4 printed p44 maps QUP[4] L0..L3 to GPIO16/17/18/19.
 # Xiaomi mondrian-s-oss pinctrl-cape.h confirms qup4 function slot1.
 # The old ff-versus-00 permutation experiment proved no SPI direction;
-# require the real8xAA boot-option handshake and checksummed chip ID.
+# require checksummed9916R firmware and bounded IC-info; no GPIO default is an ACK.
 bitbang-pins = "10000000110000001200000013000000"

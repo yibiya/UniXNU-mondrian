@@ -587,3 +587,30 @@ Table2-4 printed p44直接列出QUP[4]：GPIO16=L0/MISO，17=L1/MOSI，18=L2/SCL
 修改ADT元组为16/17/18/19，只重建payload并沿用`boot-touch-reset`的同一内核。
 不改电源/频率/时序，不扫描排列；AA读回和checksum有效ID是下一轮判据。
 
+
+Pin-trial image `boot-touch-pins-20261113.img` sha256
+`ddfc759b3fd3d92fdeb7b544b82929f39239440730ab04ae702bfd7f05e9ff91`；
+payload kernel仍`d48f594b`、编译kernel仍`6d72dc8b`，没有重编内核或改boot参数。
+源码`1010e8b3939a14201e4bc01424861b0cee6e4245`，仅ADT触摸角色值改为16/17/18/19。
+
+
+`console-20261113-200959.log`（152483B）确认16/17/18/19已实际运行，仍AA读回00
+三次，未到chip ID。与前轮同一内核，说明单纯元组修正未闭合故障。
+不能继续把GPIO电平推断为rail或总线应答。转向实际Android `goodix_core.ko`
+`brl_power_on/brl_select_spi_mode`与固件PMIC接口，逐项核对9916R实际启动协议。
+
+
+## 12. 2026-11-13：以实际Android模块纠正Berlin族启动协议
+
+`goodix_core.ko`实际ELF反汇编：`goodix_get_ic_type`0x18fa4读compatible，
+0x190b0/0x190c4分别检测`9916`/`spi`并到0x19284返回6。字符串重定位
+`.rodata+0x66bb=9916`、`+0xc49d=spi`；真实`xiaomi,m11a-spi`因此走6/BerlinD。
+`goodix_spi_probe`0x174c只为numeric4选择9-byte读；6走8-byte普通读，当前帧头正确。
+Goodix公开枚举A=4/B=5/D=6：[pinned header](https://github.com/goodix/goodix_ts_berlin/blob/58cc7874cb5e13490a6c8720b308fa56847a1f51/goodix_ts_core.h#L65-L73)。
+
+实际`brl_power_on`0x111d4非4直接跳到0x11660等待100ms，初次上电没有8×AA。
+0xc900与0xd807/0xd806/0xd006/0xd808是BerlinA-only，不能用于9916R。
+删除未匹配本机模块的AA强制门禁，释放RESET后100ms读28字节firmware和有界
+IC-info；全0/ff、checksum错误和描述ABI错误仍拒绝。恢复reset仍2ms/100ms。
+这是协议匹配，不是把dummy数据当成功，也不增加fallback。实际应答仍待上机。
+
