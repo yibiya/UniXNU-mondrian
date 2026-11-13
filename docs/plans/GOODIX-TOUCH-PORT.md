@@ -752,3 +752,22 @@ kernel/payload构建成功：compiled323b97f2、payload34122d3e；
 throwaway检查通过exactidentity/aux/duplicate/overlap/slave边界；VRM事务检查
 通过realACK、busy拒绝、未知电压拒绝、timeoutquarantine和retained电压不降低。
 
+
+实际`console-20261114-042106.log`160230B：targetVRM两条请求ACK，C200读
+err0/arb1，ready1/enable1/programmed1800/valid1800/mode7/status87。继而
+chip BERLIN/9916R firmware05800263、IC-info193bytes/misc49/touch10308/
+command10174/head8/point8校验通过；CFG-START/DL1488bad0/WRITE/EXIT/
+COORD-MODE均ACK80。stage6真实驱动ready并发布设备，不再停SPI默认全00。
+没有手指事件/HID消费证据，不能将底层成功升级为触摸交互资格。
+
+同轮硬件INTF1 framecount2027→2067（39428ms）、2067→2128（60012ms），
+约1Hz；autorefresh8000003c、sync180064。其它INTF无帧。这与用户约1fps一致，
+接下来查目标DPU framecount字段，不再用GPU处理fps证明panel刷新。
+
+
+实体键已有当前kernel peripheral资格和power真实down/up。修正polling failure
+计数位置到PON与GPIO两次读之后，避免PON成功掩盖volume-up连续失败；
+连续8轮失败仍按原规则释放所有held keys并停止，不伪造输入。
+网络/蓝牙/音频/电量无可安全打开的额外switch；battery代码已编译但实际
+PAS1/exclusiveGLINK handoff缺失阻止publication，保持真实资格门不补假电量。
+

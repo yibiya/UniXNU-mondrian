@@ -303,12 +303,12 @@
 +                look(&keys[2],(state&0x40)!=0);
 +            } else good=false;
 +        }
-+        failures=good?0:failures+1;
 +        if (keys[1].usable) {
 +            uint8_t gpio=0;
 +            if (pong_spmi_read(&pin,0x10,&gpio,1,NULL)==0) look(&keys[1],(gpio&1)==0);
 +            else good=false;
 +        }
++        failures=good?0:failures+1;
 +        if (failures>=8) {
 +            for (unsigned i=0;i<3;i++) if (keys[i].down)
 +                pong_touch_post(PONG_BUTTON_UP,keys[i].code,0,0);
