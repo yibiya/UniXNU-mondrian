@@ -795,3 +795,12 @@ pong-touch fd4、pong-buttons fd3，display-integrated digitizer、tapwakeconsum
 创建成功并开始读真实sample。没有不可用API/读取失败；没有实际手指sample，
 故明早触摸响应/手势/多点释放仍须物理验收。面板counter实测恢复约60.6Hz。
 
+
+正常交付候选 `E:\k60-ios\boot-k60-morning-20261114.img`，SHA256
+`1581207723290c47365f28852cd5eacb22235001348e2e41bacd0f2624640237`。
+实际`console-20261114-051254.log`148888B：gprobe0、stage6、autoreset300；
+目标供电/chip/config及真实HID设备/digitizer/tapwake/readloop再次通过。
+INTF1count改1/readback保持，后续3627frames/59984ms（约60.5Hz）。
+capture317.72s结束并回fastboot，最终fastboot设备查询确认be74ba07。
+已停止自动boot，保留fastboot；真实手指/多点/释放/边缘手势待用户明早物理验收。
+

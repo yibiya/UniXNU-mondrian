@@ -11,7 +11,7 @@
 - 同轮面板 INTF1 从约 1.01Hz 恢复到 3635 帧 / 59983ms（约 60.6Hz）；不宣称 120Hz 或未经观察的可见流畅度。
 - 手指 down/move/up、多点释放、边缘手势及可见动画尚无物理验收；不得用模拟输入替代。
 - Wi-Fi、蓝牙、音频、电量没有新增资格；电量阻塞于真实 PAS1/exclusive GLINK handoff，未发布假电量。
-- 正常候选正在验证，最终日志及 fastboot 末态在本节追加。
+- 正常候选已实测：`console-20261114-051254.log`（148888B），`gprobe=0` 时仍打开真实 touch/button HID，完成 count60→1/readback；后续 3627 帧 / 59984ms（约 60.5Hz）。300秒定时已armed/fastboot primed，317.72s USB结束，capture及最终设备查询均为 `be74ba07 fastboot`，已留fastboot供明早验收。
 
 ## 最新状态（2026-11-09 12:30，覆盖下面的旧记录）
 

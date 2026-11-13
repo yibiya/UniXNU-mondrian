@@ -847,3 +847,9 @@ INTF1在37661ms前进38帧，约1.01Hz；单次count60→1 readback80000001。
 后续59983ms前进3635帧，约60.6Hz，readback保持。触摸power/chip/config
 资格和真实HID/device打开同时成功。实际glass动画未有人观察，不能声称120fps。
 
+
+正常gprobe0镜像`boot-k60-morning-20261114.img`（SHA15812077）也实测通过：
+`console-20261114-051254.log`：单次count60→1/readback80000001，后续
+3627frames/59984ms（约60.5Hz），证明修复不依赖诊断开关。真实触摸/键HID已打开。
+300秒自动复位后已留fastboot，停止boot循环；glass流畅度仍待用户物理观察。
+
