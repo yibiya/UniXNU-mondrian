@@ -1,21 +1,19 @@
 diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
-@@ -7392,6 +7392,82 @@
+@@ -7392,6 +7392,81 @@
  	__asm__ volatile("" : : "r"(status), "r"(authorized) : "memory");
  }
  
-+/* Boot-time read-only union views of owner-provided GPU addon content over sealed system directories, mounted after the Data mount and
-+ * before launchd starts: the Adreno Metal plugin bundle over /System/Library/Extensions (the original Metal discovery loads
-+ * /System/Library/Extensions/<MetalPluginName>.bundle) and an owner launchd job over /System/Library/LaunchDaemons (a process outside
-+ * every sandbox profile). Only with boot-arg sheng-gpu-addon=1. Never panics: a missing source directory or a refused mount only
-+ * records its status. The backing directories are owner Data (not an authenticated immutable volume); code in them still has to
-+ * pass AMFI through the loaded trust cache. */
++/* Boot-time read-only Extensions union for the owner Data Metal bundle.
++ * Deployment and mounting run after the writable APFS Data identity check,
++ * before launchd starts, only with pong_gpu_scanout=1. Code in the overlay
++ * still passes normal signature checks; the offline GPU broker is unrelated.
++ * A failed deployment leaves the CPU presentation path available.
++ */
 +extern volatile int native_bindfs_boot_mount;
 +volatile int native_gpu_addon_stage = 0;
 +volatile int native_gpu_addon_status = -1;
-+volatile int native_gpu_addon2_stage = 0;
-+volatile int native_gpu_addon2_status = -1;
 +static void
 +native_gpu_addon_mount(proc_t p, user_addr_t scratch, user_addr_t offset, const char *source, size_t source_size,
 +    const char *point, size_t point_size, const char *visible, const char *own, volatile int *stage, volatile int *status)
@@ -67,25 +65,27 @@ diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
 +native_gpu_addon_prepare(proc_t p, user_addr_t scratch)
 +{
 +	uint32_t enabled = 0;
-+	if (!PE_parse_boot_argn("sheng-gpu-addon", &enabled, sizeof(enabled)) || enabled != 1) {
++	if (!PE_parse_boot_argn("pong_gpu_scanout", &enabled, sizeof(enabled)) || enabled != 1) {
 +		return;
 +	}
++	extern int k60_metal_deploy(proc_t, user_addr_t);
++	int error = k60_metal_deploy(p, scratch);
++	printf("K60ADDON deploy error=%d\n", error);
++	if (error) return;
 +	static const char extensions_source[] = "/private/var/ngpu/addons", extensions_point[] = "/System/Library/Extensions";
-+	static const char daemons_source[] = "/private/var/ngpu/daemons", daemons_point[] = "/System/Library/LaunchDaemons";
 +	native_gpu_addon_mount(p, scratch, 0x400, extensions_source, sizeof(extensions_source), extensions_point,
 +	    sizeof(extensions_point), "/System/Library/Extensions/AGXMetalA10.bundle",
 +	    "/System/Library/Extensions/PongAdrenoMetal.bundle/Info.plist", &native_gpu_addon_stage,
 +	    &native_gpu_addon_status);
-+	native_gpu_addon_mount(p, scratch, 0x600, daemons_source, sizeof(daemons_source), daemons_point, sizeof(daemons_point),
-+	    "/System/Library/LaunchDaemons/com.apple.backboardd.plist",
-+	    "/System/Library/LaunchDaemons/org.blu-sharky.adrenoprobed.plist", &native_gpu_addon2_stage, &native_gpu_addon2_status);
++	printf("K60ADDON Extensions stage=%d error=%d\n", native_gpu_addon_stage, native_gpu_addon_status);
 +}
 +
  static int
  native_owner_cache_prepare(proc_t p, user_addr_t scratch, user_addr_t *envp)
  {
-@@ -8140,6 +8216,7 @@
- 	if (actual != device ||
+@@ -8140,6 +8215,7 @@
+-	if (actual != device ||
++	if (actual != device || (vfs_flags(data_mount) & MNT_RDONLY) ||
  	    strcmp(vfs_statfs(data_mount)->f_fstypename, "apfs")) error = EINVAL;
  	if (!error) native_owner_data_stage = 4;
 +	if (!error) native_gpu_addon_prepare(p, scratch);
