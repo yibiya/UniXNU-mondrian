@@ -558,3 +558,18 @@ Device-confirm仅在初次power-on执行一次；恢复reset之后直接读check
 正常GPU渲染、拷贝与CPU回退不变。Host实际GPIO配置函数的四种present/enable
 组合验证通过：present时置APPS位，保留未关联控制位。
 
+
+Host检查：实际GPIO配置函数present/enable四组合与实际`bring_up`控制流夹具通过，
+总线初始化时RESET仍低、4ms后握手、成功100ms后读ID，失败保留RESET低。
+kernel/payload构建通过，`boot-touch-reset-20261113.img` sha256
+`6883848d04357e21d8916555502d78c5505511f580fd5c115cd51a8c9fe0c765`，
+源码`e6a63f50446c0616455fdbf32ba5dc827ec8cf63`，编译kernel`6d72dc8b`，
+payload kernel`d48f594b`。从确认LDO2启用的Android热重启，只用fastboot boot。
+
+
+真机`console-20261113-194925.log`（198068B）：初始化时序修正已运行，但八字节AA
+仍读回00三次，用户确认触摸无效。GPIO20/21/71及16–19的原始cfg均从0x1开始，
+bit11未置位，因此此板上eGPIO条件启用未改变ownership，不能当作此次故障根因。
+AVDD71 IO=3仅证明GPIO电平，不证明IOVDD1.8V。下一步需要XNU中实际LDO2状态或
+独立的SPI角色证据；不重复相同镜像、不把GPIO电平当供电测量。
+
