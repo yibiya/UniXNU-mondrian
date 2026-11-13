@@ -16,7 +16,7 @@ new file mode 100644
 index 0000000..b033b90
 --- /dev/null
 +++ b/bsd/dev/pong_goodix.c
-@@ -0,0 +1,1303 @@
+@@ -0,0 +1,1268 @@
 +/* Goodix Berlin-D on Redmi K60 / SM8475. Adapted from HackiOS
 + * redwood_goodix.c (APSL 2.0) and the Pong driver. Board resources come
 + * from the K60 live FDT; Berlin framing follows the Linux transport. */
@@ -642,35 +642,6 @@ index 0000000..b033b90
 +static uint8_t spi_tx[8 + GOODIX_MAX_READ], spi_rx[8 + GOODIX_MAX_READ];
 +static uint32_t touch_address, command_address, fw_buffer_address;
 +
-+/* Berlin-D answers no register until the boot-option handshake has run:
-+ * write 8 x 0xAA to 0x10000 and require the same eight bytes back. It is
-+ * also the only independent proof of the MISO/MOSI/CLK/CS assignment. */
-+#define GOODIX_BOOTOPTION_ADDR  0x10000
-+#define GOODIX_DEV_CONFIRM_VAL  0xAA
-+
-+static bool goodix_read(uint32_t address, uint8_t *data, uint32_t length);
-+static bool goodix_write(uint32_t address, const uint8_t *data, uint32_t length);
-+
-+static bool
-+goodix_dev_confirm(void)
-+{
-+	uint8_t tx[8], rx[8];
-+
-+	memset(tx, GOODIX_DEV_CONFIRM_VAL, sizeof(tx));
-+	for (unsigned attempt = 0; attempt < 3; attempt++) {
-+		memset(rx, 0, sizeof(rx));
-+		if (!goodix_write(GOODIX_BOOTOPTION_ADDR, tx, sizeof(tx))) return false;
-+		if (!goodix_read(GOODIX_BOOTOPTION_ADDR, rx, sizeof(rx))) return false;
-+		if (memcmp(tx, rx, sizeof(tx)) == 0) {
-+			printf("goodix: device confirm OK (0x10000 = 8 x 0xAA)\n");
-+			return true;
-+		}
-+		printf("goodix: device confirm mismatch %02x %02x (attempt %u)\n", rx[0], rx[1], attempt);
-+		sleep_ms(5);
-+	}
-+	printf("goodix: device confirm FAILED; check AVDD(GPIO71)/IOVDD/RESET/SPI\n");
-+	return false;
-+}
 +
 +static bool
 +goodix_read(uint32_t address, uint8_t *data, uint32_t length)
@@ -758,8 +729,8 @@ index 0000000..b033b90
 +    uint32_t length, offset;
 +    touch_address = command_address = fw_buffer_address = 0;
 +
-+    /* Device confirm belongs to initial power-on; recovery reads identity
-+     * after its full boot wait, without rewriting the ROM boot option. */
++    /* The actual K60 Berlin-D driver reads identity after reset/full boot;
++     * Berlin-A's SPI-select and clock-trim sequence does not apply. */
 +    if (!goodix_read(GOODIX_FW_VERSION, version, sizeof(version))) {
 +        printf("goodix: firmware-version SPI transfer failed at %#x\n", GOODIX_FW_VERSION);
 +        return false;
@@ -1172,18 +1143,12 @@ index 0000000..b033b90
 +            spi_transfer = geni_transfer;
 +        }
 +    }
-+    /* Linux Berlin power-on: transport is ready while RESET remains low;
-+     * release, wait 4 ms, confirm boot option, then allow full firmware boot. */
++    /* Actual K60 goodix_core.ko: Berlin-D releases RESET, waits 100 ms,
++     * then reads identity. There is no boot-option write/read prerequisite. */
 +    gpio_set(PIN_RESET, true);
-+    sleep_ms(4);
-+    if (!goodix_dev_confirm()) {
-+        printf("Pong touch: initial boot-option handshake failed; RESET held low\n");
-+        gpio_set(PIN_RESET, false);
-+        return false;
-+    }
 +    sleep_ms(100);
 +    if (!goodix_probe(true)) {
-+        printf("Pong touch: identification failed; retained IOVDD is unverified, no /dev/pong-touch\n");
++        printf("Pong touch: chip identity unavailable; no /dev/pong-touch\n");
 +        return false;
 +    }
 +    return true;
