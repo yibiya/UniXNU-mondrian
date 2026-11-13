@@ -16,7 +16,7 @@ new file mode 100644
 index 0000000..b033b90
 --- /dev/null
 +++ b/bsd/dev/pong_goodix.c
-@@ -0,0 +1,1285 @@
+@@ -0,0 +1,1302 @@
 +/* Goodix Berlin-D on Redmi K60 / SM8475. Adapted from HackiOS
 + * redwood_goodix.c (APSL 2.0) and the Pong driver. Board resources come
 + * from the K60 live FDT; Berlin framing follows the Linux transport. */
@@ -147,7 +147,12 @@ index 0000000..b033b90
 +gpio_configure(unsigned pin, unsigned function, unsigned pull, unsigned ma, bool output)
 +{
 +	uint32_t value = pull | function << 2 | (ma / 2 - 1) << 6 | (output ? 1u << 9 : 0);
-+	wr(GPIO_CFG(pin), (rd(GPIO_CFG(pin)) & ~0x3ffu) | value);
++    uint32_t before = rd(GPIO_CFG(pin));
++    value |= before & ~0x3ffu;
++    /* Cape pinctrl claims APPS control when the pad supports eGPIO. */
++    if (before & (1u << 11)) value |= 1u << 12;
++    wr(GPIO_CFG(pin), value);
++    printf("Pong touch: GPIO%u cfg=%#x -> %#x io=%#x\n", pin, before, rd(GPIO_CFG(pin)), rd(GPIO_IO(pin)));
 +}
 +
 +static void
@@ -1166,6 +1171,16 @@ index 0000000..b033b90
 +            spi_transfer = geni_transfer;
 +        }
 +    }
++    /* Linux Berlin power-on: transport is ready while RESET remains low;
++     * release, wait 4 ms, confirm boot option, then allow full firmware boot. */
++    gpio_set(PIN_RESET, true);
++    sleep_ms(4);
++    if (!goodix_dev_confirm()) {
++        printf("Pong touch: initial boot-option handshake failed; RESET held low\n");
++        gpio_set(PIN_RESET, false);
++        return false;
++    }
++    sleep_ms(100);
 +    if (!goodix_probe(true)) {
 +        printf("Pong touch: identification failed; retained IOVDD is unverified, no /dev/pong-touch\n");
 +        return false;
@@ -1193,7 +1208,6 @@ index 0000000..b033b90
 +    gpio_configure(PIN_INT, 0, PULL_UP, 8, false);
 +    gpio_output(PIN_RESET, false, PULL_UP, 8);
 +    io_supply_on();
-+    touch_reset();
 +    if (touch_stage == 2) {
 +        printf("Pong touch: stage 2 GPIO/AVDD complete; retained IOVDD not measured\n");
 +        goto out;
@@ -1204,8 +1218,11 @@ index 0000000..b033b90
 +            printf("Pong touch: stage %u clocks complete; no serial-engine access\n", touch_stage);
 +            goto out;
 +        }
++        sleep_ms(2); /* minimum asserted-reset duration before transport setup */
 +        for (unsigned i = 0; i < 3; i++) gpio_configure(pins[i], PIN_FUNCTION_SPI, PULL_NONE, 6, false);
 +        gpio_configure(PIN_CS, PIN_FUNCTION_SPI, PULL_UP, 6, false);
++    } else {
++        sleep_ms(2);
 +    }
 +    if (!bring_up()) {
 +        printf("Pong touch: Goodix initialization failed; normal UI boot continues\n");
