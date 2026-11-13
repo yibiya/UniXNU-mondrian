@@ -656,3 +656,11 @@ TOML evidence中历史JSON冒号已修为inline-TOML等号，文件解析通过�
 `scripts/check-porting-paths.py --quiet`仍报5012未认领路径（包括XNU源码/headers），
 不是触摸协议结果；没有为掩盖检查而增添宽泛路径认领。
 
+
+实际`console-20261114-021326.log`205330B（源码3cf75ef，image5622eb59）：
+CS19 IO=3/0/3，SCLK18/MOSI17 IO=0/3/0，证明这些pad的sampled输入跟随
+已知输出latch；RESET20 release与100ms后IO=3。IRQ1/MISO0。
+28-byte firmware实际全00；没有chip ID、IC-info、devfs或HID。用户确认仍无触摸。
+这排除了本轮GPIOpad不翻转/RESET未释放；不证明板级continuity或IOVDD保留。
+capture在310.85s读错误后回fastboot，后续ADB已恢复Android。
+
