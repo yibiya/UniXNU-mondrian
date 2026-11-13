@@ -787,3 +787,25 @@ RGB 4435 次采样：源变化1356、目标1350、9次不匹配、1522次拷贝�
 后段 51 个显示事务/s、拷贝约14.5ms，仍不代表面板新画面/s。保留这些证据，
 下一步只读 DPU/DSI 真实帧/TE/触发状态，不凭软件节拍改面板档位。
 
+
+拷贝期源变化不能单独证明 producer race：`NativeAdrenoSubmit::synchronizeCompleted`
+会经 `NativeAdrenoVm::acquireImported` clean/invalidate 导入页，拷贝前 CPU 采样可能
+看到旧缓存、完成后才看到此前 GPU 写入。Pong runtime 的 storage dependency 识别
+相同/重叠虚拟地址，不比较物理页或 IOSurfaceID；只在已提交、同进程且有范围重叠的
+producer 证据成立时才考虑选择性等待。NativeMetal 的 `NBWaitInFlight` 因
+`earlyOn()==false` 实际不等待，不能当已验证先例。当前不添加全局等待。
+
+
+### 7.11 只读面板计数：先验证寄存器访问时钟
+
+K60 FDT `work/refs/mondrian-mainline.dts:20109-20112`：INTF偏移
+0x35000/0x36000/0x37000/0x38000（MDSS相对，不额外加0x1000）。
+[zizhan 同SM8475的 dpuBus](https://github.com/qiumochen/UniXNU-zizhan/blob/main/drivers/PongAdreno/PongAdrenoScanout.cpp#L160-L195)
+记录扫描期间直接读MDSS曾挂死，因此先读 GCC_DISP_AHB CBCR0x137004，再读
+DISPCC0xaf080a4的MDSS AHB和0xaf09000的GDSC。时钟bit31必须为0，电源bit31为1，
+否则只记录skip，不读MDSS，不自动开启时钟。
+[intfProbe/intfRate](https://github.com/qiumochen/UniXNU-zizhan/blob/main/drivers/PongAdreno/PongAdrenoScanout.cpp#L644-L675)
+及Linux INTF寄存器定义提供frame0xac、DSI INTF1/2 TE0x298高16位、autorefresh0x2b4。
+`gprobe=1`完成GPU拷贝后最多120秒、每5秒读计数，独立映射4KiB页；不写DPU/DSI，
+不改面板频率。frame/TE delta按32/16位模减法记录，首样本只给raw。
+
