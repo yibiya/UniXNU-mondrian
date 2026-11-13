@@ -12,7 +12,7 @@ The kernel can: 0340 and 0394 already write their payloads there after the Data
 mount succeeds. This script produces the same shape of blob for the plugin, so
 the bytes travel inside kernel.macho instead of through the volume.
 
-    python3 scripts/gen-k60-metal-blob.py --plugin-dir <dir> --output <file.c>
+    python3 scripts/gen-k60-metal-blob.py --plugin-dir <dir> --publish --output <file.c>
 
 The container is a flat table followed by the file bodies:
 
@@ -34,8 +34,8 @@ HEADER = struct.Struct('<4sI')
 ENTRY = struct.Struct('<HII')
 ALIGN = 8
 
-# Order matters only in that the directories are created first; the kernel
-# writes the bundle and the two seed files under /private/var/ngpu otherwise.
+# The kernel writes the bundle and both discovery seeds beneath
+# /private/var/ngpu/addons, which is union-mounted over Extensions.
 FILES = (
     ('addons/PongAdrenoMetal.bundle/Info.plist', 0o644),
     ('addons/PongAdrenoMetal.bundle/PongAdrenoMetal', 0o755),
@@ -43,47 +43,47 @@ FILES = (
     ('addons/PongAdrenoMetal.bundle/libvulkan_freedreno.dylib', 0o755),
 )
 SEEDS = (
-    ('PongAdrenoMetal.clients', 0o644),
-    ('PongAdrenoMetal.publish', 0o644),
+    ('addons/PongAdrenoMetal.clients', 0o644),
+    ('addons/PongAdrenoMetal.publish', 0o644),
 )
 
 
-def build(plugin_dir: Path, publish: bool) -> bytes:
-    bodies = []
-    for rel, mode in FILES:
-        source = plugin_dir / rel.replace('addons/PongAdrenoMetal.bundle/', '')
+def sources(plugin_dir: Path):
+    files = []
+    for rel, _ in FILES + SEEDS[:1]:
+        source = plugin_dir / Path(rel).name
         if not source.is_file():
             raise SystemExit(f'missing input: {source}')
-        bodies.append((rel.encode(), source.read_bytes(), mode))
-    # The publication marker is what PongMetalPlugin::selectedClient() reads; it
-    # ships as '0' from the build scripts on purpose, so enable it explicitly.
-    clients = plugin_dir / SEEDS[0][0]
-    if not clients.is_file():
-        raise SystemExit(f'missing input: {clients}')
-    bodies.append((SEEDS[0][0].encode(), clients.read_bytes(), SEEDS[0][1]))
-    bodies.append((SEEDS[1][0].encode(), b'1\n' if publish else b'0\n', SEEDS[1][1]))
+        files.append((rel.encode(), source.stat().st_size, source.resolve()))
+    return files
 
-    names = b''.join(name for name, _, _ in bodies)
-    table = b''.join(ENTRY.pack(len(name), len(data), 0) for name, data, _ in bodies)
-    base = HEADER.size + len(table) + len(names)
-    base = (base + ALIGN - 1) & ~(ALIGN - 1)
 
-    out = bytearray()
-    offsets = []
+def layout(files):
+    """Return the serialized header and the fully padded container length."""
+    names = b''.join(name for name, _, _ in files)
+    base = (HEADER.size + ENTRY.size * len(files) + len(names) + ALIGN - 1) & ~(ALIGN - 1)
+    table = bytearray()
     cursor = base
-    for _, data, _ in bodies:
-        offsets.append(cursor)
-        out += data
-        pad = (-len(data)) % ALIGN
-        out += b'\0' * pad
-        cursor += len(data) + pad
-
-    # Rebuild the table now that the offsets are known.
-    table = b''.join(ENTRY.pack(len(name), len(data), offsets[i])
-                     for i, (name, data, _) in enumerate(bodies))
-    head = HEADER.pack(MAGIC, len(bodies)) + table + names
+    for name, size, _ in files:
+        table += ENTRY.pack(len(name), size, cursor)
+        cursor += (size + ALIGN - 1) & ~(ALIGN - 1)
+    head = HEADER.pack(MAGIC, len(files)) + table + names
     head += b'\0' * (base - len(head))
-    return bytes(head + out)
+    return head, cursor
+
+
+def build(plugin_dir: Path, publish: bool) -> bytes:
+    bodies = [(name, path.read_bytes()) for name, _, path in sources(plugin_dir)]
+    # Build scripts leave publication disabled; deployment enables it explicitly.
+    bodies.append((SEEDS[1][0].encode(), b'1\n' if publish else b'0\n'))
+    head, total = layout([(name, len(data), None) for name, data in bodies])
+    blob = bytearray(total)
+    blob[:len(head)] = head
+    cursor = len(head)
+    for _, data in bodies:
+        blob[cursor:cursor + len(data)] = data
+        cursor += (len(data) + ALIGN - 1) & ~(ALIGN - 1)
+    return bytes(blob)
 
 
 def emit_source(files, output: Path) -> None:
@@ -92,17 +92,7 @@ def emit_source(files, output: Path) -> None:
     A C array of the same 40 MB compiles to a 207 MB translation unit; .incbin
     keeps the source at a few lines and lets the assembler copy the bytes.
     """
-    names = b''.join(name for name, _, _ in files)
-    # Bodies follow the aligned header, each one padded to ALIGN.
-    base = (HEADER.size + ENTRY.size * len(files) + len(names) + ALIGN - 1) & ~(ALIGN - 1)
-    offsets, cursor = [], base
-    for _, size, _ in files:
-        offsets.append(cursor)
-        cursor += (size + ALIGN - 1) & ~(ALIGN - 1)
-    table = b''.join(ENTRY.pack(len(name), size, offsets[i])
-                     for i, (name, size, _) in enumerate(files))
-    head = HEADER.pack(MAGIC, len(files)) + table + names
-    head += b'\0' * (base - len(head))
+    head, total = layout(files)
 
     lines = ['/* Generated by scripts/gen-k60-metal-blob.py - do not edit. */',
              '.data',
@@ -112,10 +102,11 @@ def emit_source(files, output: Path) -> None:
     for start in range(0, len(head), 16):
         chunk = head[start:start + 16]
         lines.append('    .byte ' + ','.join('0x%02x' % b for b in chunk))
-    for _, _, path in files:
+    for _, size, path in files:
         lines.append('    .incbin "%s"' % path)
-        lines.append('    .p2align 3')
-    total = len(head) + sum(size for _, size, _ in files)
+        padding = (-size) % ALIGN
+        if padding:
+            lines.append('    .zero %d' % padding)
     lines += ['', '.globl _k60_metal_blob_len', '.p2align 3', '_k60_metal_blob_len:',
               '    .quad %d' % total]
     # Modes travel as a halfword table so the kernel does not need a second name
@@ -129,7 +120,7 @@ def emit_source(files, output: Path) -> None:
 def emit(blob: bytes, output: Path) -> None:
     lines = ['/* Generated by scripts/gen-k60-metal-blob.py - do not edit. */',
              '#include <sys/types.h>', '',
-             'const unsigned int k60_metal_blob_len = %d;' % len(blob),
+             'const unsigned long long k60_metal_blob_len = %dULL;' % len(blob),
              'const unsigned char k60_metal_blob[] = {']
     for start in range(0, len(blob), 16):
         chunk = blob[start:start + 16]
@@ -150,22 +141,13 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--assembly', action='store_true',
                         help='emit an assembly file using .incbin instead of a C array')
-    parser.add_argument('--publish', action='store_true', default=True,
+    parser.add_argument('--publish', action='store_true',
                         help='write PongAdrenoMetal.publish as 1 (enables the plugin)')
     args = parser.parse_args()
 
     if args.assembly:
-        files = []
-        for rel, _ in FILES:
-            source = args.plugin_dir / rel.replace('addons/PongAdrenoMetal.bundle/', '')
-            if not source.is_file():
-                raise SystemExit(f'missing input: {source}')
-            files.append((rel.encode(), source.stat().st_size, source.resolve()))
-        clients = args.plugin_dir / SEEDS[0][0]
-        if not clients.is_file():
-            raise SystemExit(f'missing input: {clients}')
-        files.append((SEEDS[0][0].encode(), clients.stat().st_size, clients.resolve()))
-        marker = args.plugin_dir / 'PongAdrenoMetal.publish.generated'
+        files = sources(args.plugin_dir)
+        marker = args.output.with_name(args.output.name + '.publish.generated')
         marker.write_bytes(b'1\n' if args.publish else b'0\n')
         files.append((SEEDS[1][0].encode(), marker.stat().st_size, marker.resolve()))
         emit_source(files, args.output)

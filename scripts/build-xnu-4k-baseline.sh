@@ -12,6 +12,30 @@ XNU_VERSION=${UNIXNU_XNU_VERSION:-8796.141.3}
 LIBPLATFORM_TAG=${UNIXNU_LIBPLATFORM_TAG:-libplatform-292.100.1}
 LIBDISPATCH_TAG=${UNIXNU_LIBDISPATCH_TAG:-libdispatch-1325.120.2}
 AVAILABILITY_TAG=${UNIXNU_AVAILABILITYVERSIONS_TAG:-AvailabilityVersions-121}
+# Format 2 selects deployment through its resolved patch list; format 1 uses
+# the legacy glob. This is independent of the private offline GPU broker.
+K60_METAL_DEPLOY=0
+if [ -n "${UNIXNU_PATCH_LIST:-}" ]; then
+  while IFS= read -r SELECTED_PATCH || [ -n "$SELECTED_PATCH" ]; do
+    if [ "${SELECTED_PATCH##*/}" = "0610-k60-metal-plugin-deploy.patch" ]; then
+      K60_METAL_DEPLOY=1
+      break
+    fi
+  done < "$UNIXNU_PATCH_LIST"
+elif [ -f "patches/xnu/0610-k60-metal-plugin-deploy.patch" ]; then
+  K60_METAL_DEPLOY=1
+fi
+K60_METAL_PLUGIN_DIR=${K60_METAL_PLUGIN_DIR:-}
+if [ "$K60_METAL_DEPLOY" = 1 ]; then
+  if [ -z "$K60_METAL_PLUGIN_DIR" ]; then
+    echo 'error: 0610 Metal deployment is selected; K60_METAL_PLUGIN_DIR must name the built plugin input directory' >&2
+    exit 1
+  fi
+  if [ ! -d "$K60_METAL_PLUGIN_DIR" ]; then
+    echo "error: K60_METAL_PLUGIN_DIR is not a directory: $K60_METAL_PLUGIN_DIR" >&2
+    exit 1
+  fi
+fi
 if [ ! -d refer/xnu/.git ]; then
   git clone --depth 1 --branch "$XNU_TAG" https://github.com/apple-oss-distributions/xnu.git refer/xnu
 fi
@@ -301,14 +325,13 @@ fi
 # 0610: the Adreno Metal plugin travels inside the kernel, because
 # /private/var/ngpu/addons lives on the APFS Data volume and no host tool here
 # can write it. The generator emits an .incbin assembly file so the 40 MB never
-# becomes a 200 MB C literal; K60_METAL_PLUGIN_DIR points at the built bundle.
-K60_METAL_PLUGIN_DIR=${K60_METAL_PLUGIN_DIR:-}
-if [ -n "$K60_METAL_PLUGIN_DIR" ] && [ -d "$K60_METAL_PLUGIN_DIR" ] && \
-   [ -f "patches/xnu/0610-k60-metal-plugin-deploy.patch" ]; then
+# becomes a 200 MB C literal. Input presence was required above only when this
+# deployment patch was selected, not merely because it exists in the checkout.
+if [ "$K60_METAL_DEPLOY" = 1 ]; then
   K60_METAL_ASM=$ROOT/.cache/xnu-work/osfmk/arm64/k60_metal_blob.s
   mkdir -p "$(dirname "$K60_METAL_ASM")"
   python3 "$PONG_NATIVE_DRIVER_SOURCE/scripts/gen-k60-metal-blob.py" \
-    --plugin-dir "$K60_METAL_PLUGIN_DIR" --assembly --output "$K60_METAL_ASM" \
+    --plugin-dir "$K60_METAL_PLUGIN_DIR" --publish --assembly --output "$K60_METAL_ASM" \
     >&2 || { echo 'k60_metal_blob generation failed' >&2; exit 1; }
 fi
 

@@ -679,3 +679,50 @@ managed 窗口自 `physBase 0x900000000` 起 4864 MiB（`K60RV` 同时报
 - `arm_vm_init` 的 `K60 FB:` 行本身就在串口可用之前打印，物理上收不到。
 
 所以这一项**只能靠板上运行** `boot-gpuA-20261112.img` 后读 `K60FB` 行，这也是把判定改接到 `K60RV` 通道的原因。
+
+### 7.7 部署修复：scratch、目录类型与挂载门
+
+`gpuF` 的 `console-20261113-112351.log` 实测 `files=0/6 error=20`，不是 GPU 执行失败。
+`0610` 原实现把 `0x400` 当用户地址交给 `copyout`，而同树 `0401` 的工作先例使用
+`native_owner_data_prepare(p, scratch)` 的真实映射加偏移。目录错误随后被文件打开覆盖。
+
+- 部署改由 ADDON 在 Data 设备、APFS 类型、读写标志校验后调用，传递 `p, scratch`。
+- 使用 `<sys/sysproto.h>` 的 `mkdir`/`unlink`，每次失败都停止。只恢复本部署固定路径上
+  **root 所有、零长度、普通文件** 的旧 `O_CREAT` 残留；符号链接和非空文件不删除。
+- 发布种子与 bundle 同置 `/private/var/ngpu/addons`，只读 union 后才出现在 Extensions。
+  重写开始先写 publication=0，六个文件全部成功后才最后写 publication=1。
+- ADDON 运行门改为已传入的 `pong_gpu_scanout=1`，不额外挤占 boot args；不覆盖 LaunchDaemons。
+- blob 长度包含所有 8 字节对齐填充；C/汇编序列化同源。`K60_METAL_PLUGIN_DIR` 缺失立即拒绝构建。
+
+离线验证：218 条 series 在干净 XNU HEAD 上严格 `git apply` 通过；小型非对齐输入经
+真实 ARM64 汇编后逐字节与 C 容器相同，末尾长度正确。三个部署 Mach-O 的 CodeDirectory
+均为 4 KiB，逐页哈希无不符。构建复用缓存 kernelcache，避免前一轮的 HTTPS 超时。
+
+`gpuG` 真机 `console-20261113-133222.log`（190388 B）完成验收链：
+
+- 333 行仅移除此前错误部署留下的空普通文件 `PongAdrenoMetal.bundle`；341 行部署 `6/6 error=0`。
+- 344 行 Extensions `stage=5 error=0`，原系统条目和插件条目同时可见。
+- 998–1012 行 backboardd 创建真实 Vulkan-backed device，scanout worker ready。
+- 1411、1448、1576 行 GPU sequence 1、2、3 完成，用户态各有一次 matching copy completed。
+  内核重复日志不计为额外帧；未出现 DMA quarantine。
+
+用户实测：画面明显改善，但可见刷新约 **1 fps**。日志后段 7–15 fps 是驱动处理帧率，
+不能替代面板实测。50–63 ms 驱动耗时、decoded-image policy 错误、能力查询缺项及
+映射告警仍待定位；保留 gpuG 有效基线和 CPU 回退，不用提高 fb_hz 或伪造 fence 解决。
+
+
+### 7.8 可见约 1 fps：跨物理碎片批处理
+
+用户观感约一秒一帧，日志 7–15 fps 不能取代这一观察。确认的可避免开销是
+`NativeAdrenoMemory::maintainImported` 按每个 span 调用 cache 维护，而底层 64 页批次
+在每次调用重新开始。碎片化的 4500 页画布因此仍产生约 4500 组 barrier/抢占切换。
+提交和完成阶段又会重复维护导入的 BO，且这些调用在共享 GPU 锁下执行。
+
+修复在 span 遍历中携带固定 64 页、512 B 栈数组，跨碎片填满批次再提交。
+不改 `dc cvac/civac/ivac` 覆盖、DRAM 外 framebuffer 排除、页对齐拒绝、真实 fence、
+映射生存期和隔离语义。缓存统计的 pass/max 现在描述已完成的有界批次。
+
+Host C++ 行为 smoke：4500 个独立物理页准确维护一次，71 批（70×64+20）；
+首尾 span 裁剪、全部操作类型、参数拒绝、firmware 排除和错误前缀传播通过。
+该 smoke 不执行特权 cache 指令，实际时间收益仍需新镜像上机测量。
+
