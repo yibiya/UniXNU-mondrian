@@ -841,3 +841,9 @@ Host scoped控制流检查通过：无计数前进、clock关闭、sync未知、
 该throwaway检查不等于显示硬件效果，仍待下一轮真机计数/readback。
 
 
+
+实际`console-20261114-050030.log`150485B（image93cbaf97/sourceef2389b）：
+INTF1在37661ms前进38帧，约1.01Hz；单次count60→1 readback80000001。
+后续59983ms前进3635帧，约60.6Hz，readback保持。触摸power/chip/config
+资格和真实HID/device打开同时成功。实际glass动画未有人观察，不能声称120fps。
+

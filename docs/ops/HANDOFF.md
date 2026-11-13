@@ -1,5 +1,18 @@
 # HANDOFF — 当前状态（滚动覆盖，只写「现在」）
 
+## 当前验收候选（2026-11-14，优先于下方历史记录）
+
+- 只用 RAM 临时启动，不刷写分区。正常候选：`E:\k60-ios\boot-k60-morning-20261114.img`。
+- 镜像 SHA256：`1581207723290c47365f28852cd5eacb22235001348e2e41bacd0f2624640237`。
+- 内核 `23a82043`，payload 内核 `ec42aa8d`，源码 `ef2389b608ecf85aafb33e56cfb1192d3a2ec8f7`。
+- 参数：`k60_touch_se=6 gprobe=0 k60_autoreset=300`。正常启动保留 300 秒回 fastboot。
+- 触摸供电故障已实测修复：目标 RPMh 请求 ACK，observer 确认 ready/enable/valid 1800mV；BERLIN/9916R 固件及 IC-info 校验、1488 字节配置及坐标模式 ACK 均通过。
+- `console-20261114-050030.log`：BackBoard 打开真实 touch/button 设备、显示集成 digitizer、tap-to-wake 服务，进入物理样本读取循环。
+- 同轮面板 INTF1 从约 1.01Hz 恢复到 3635 帧 / 59983ms（约 60.6Hz）；不宣称 120Hz 或未经观察的可见流畅度。
+- 手指 down/move/up、多点释放、边缘手势及可见动画尚无物理验收；不得用模拟输入替代。
+- Wi-Fi、蓝牙、音频、电量没有新增资格；电量阻塞于真实 PAS1/exclusive GLINK handoff，未发布假电量。
+- 正常候选正在验证，最终日志及 fastboot 末态在本节追加。
+
 ## 最新状态（2026-11-09 12:30，覆盖下面的旧记录）
 
 ### 一句话：**实体键全链路打通**（内核识别三键 + 用户态 HID 打开）；触摸驱动已运行但 DT 配置失败；系统正常起 SpringBoard

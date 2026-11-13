@@ -789,3 +789,9 @@ HID+panel修复已构建：UI113552B sha16d47ae4，embed与0340逐字节一致�
 compiled23a82043、payload ec42aa8d、源码ef2389b608ecf85aafb33e56cfb1192d3a2ec8f7。
 正常stage6、gprobe1、autoreset300，UEFI/DTB不变；实际HID打开/面板counter效果待capture。
 
+
+实际`console-20261114-050030.log`：IOKit APIs全解析成功；BackBoard打开
+pong-touch fd4、pong-buttons fd3，display-integrated digitizer、tapwakeconsumer
+创建成功并开始读真实sample。没有不可用API/读取失败；没有实际手指sample，
+故明早触摸响应/手势/多点释放仍须物理验收。面板counter实测恢复约60.6Hz。
+
