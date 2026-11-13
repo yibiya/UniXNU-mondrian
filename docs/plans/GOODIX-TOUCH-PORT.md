@@ -552,3 +552,9 @@ Linux v6.12 `goodix_berlin_core.c:247-279` 初次上电：IOVDD→3ms→AVDD→1
 恢复reset仍保留low2/high100ms。该顺序来源证明时序差异，不证明9916R有硬4ms截止。
 GPIO角色17/18/16/19仍未由成功握手证明，若仍失败必须看真实pad/供电读数。
 
+
+Device-confirm仅在初次power-on执行一次；恢复reset之后直接读checksum有效的固件
+与IC-info，不再在100ms之后重写ROM boot-option。GPU `gprobe`暂停（置0），
+正常GPU渲染、拷贝与CPU回退不变。Host实际GPIO配置函数的四种present/enable
+组合验证通过：present时置APPS位，保留未关联控制位。
+
