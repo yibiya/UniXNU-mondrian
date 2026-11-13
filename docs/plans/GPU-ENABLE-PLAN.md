@@ -710,3 +710,19 @@ managed 窗口自 `physBase 0x900000000` 起 4864 MiB（`K60RV` 同时报
 不能替代面板实测。50–63 ms 驱动耗时、decoded-image policy 错误、能力查询缺项及
 映射告警仍待定位；保留 gpuG 有效基线和 CPU 回退，不用提高 fb_hz 或伪造 fence 解决。
 
+
+### 7.8 可见约 1 fps：跨物理碎片批处理
+
+用户观感约一秒一帧，日志 7–15 fps 不能取代这一观察。确认的可避免开销是
+`NativeAdrenoMemory::maintainImported` 按每个 span 调用 cache 维护，而底层 64 页批次
+在每次调用重新开始。碎片化的 4500 页画布因此仍产生约 4500 组 barrier/抢占切换。
+提交和完成阶段又会重复维护导入的 BO，且这些调用在共享 GPU 锁下执行。
+
+修复在 span 遍历中携带固定 64 页、512 B 栈数组，跨碎片填满批次再提交。
+不改 `dc cvac/civac/ivac` 覆盖、DRAM 外 framebuffer 排除、页对齐拒绝、真实 fence、
+映射生存期和隔离语义。缓存统计的 pass/max 现在描述已完成的有界批次。
+
+Host C++ 行为 smoke：4500 个独立物理页准确维护一次，71 批（70×64+20）；
+首尾 span 裁剪、全部操作类型、参数拒绝、firmware 排除和错误前缀传播通过。
+该 smoke 不执行特权 cache 指令，实际时间收益仍需新镜像上机测量。
+
