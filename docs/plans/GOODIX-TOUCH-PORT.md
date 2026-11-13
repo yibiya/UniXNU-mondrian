@@ -706,3 +706,33 @@ peripheral资格通过；本轮不能把driver45fps称为可见显示合格。
 使用现有0334b独立内核线程和fastboot restart priming；不新增watchdog，
 仍只fastboot boot。正常输入配置仍stage6，stage7是明确不发布input的取证路径。
 
+
+## 15. 修复实测丢失的IOVDD：共享RPMh owner
+
+当前编译provider确为device-ui/drivers/PongAdreno/PongAdrenoPlatform.cpp；
+其run412–427实际direct RSC17a20000，GPU22阶段已实测成功；top securehelper
+是死代码残留。触摸不得自行map旧17a00000或用被拒绝的SPMI RW。
+使用同一TCS3 owner串行化GPU/触摸，保留现有idle/conflict/freshcompletion判据。
+ldoc2 cmdDB VRM地址42c00、aux012a0000；两条owner请求：voltage1800mV、
+enable1@42c04，不是PMIC EN_CTL80。mode/headroom/其它rail不改，保留已存在
+1800..1980更高vote，失败不重用未确认inflight事务。ACK后observer实测
+type4/sub87、ready/enable/valid1800..1980再释放RESET，最后验证chip/IC-info和HID。
+
+actualAOPconfigCRC LDO_RAIL=2fbb5c4d→PMICslot2ptr8088031c（file3d0），
+消费者8081d56c/570按36bytes/rail取Accessbit0；ldoc2零索引1=file3f4
+recordword0=6101（Access1），min/max1800/1980，+1c owner mask4。
+消费者8081d6a0/6a4将mask交0b00351c逐bit映射，不以SPMI写owner推断RPMh权限。
+这是从本机AOP/config解出的目标值，不套旧PMICbase或他机mask。
+
+
+已实现独立于GPU启动的pong_touch_iovdd_enable：shared mutex保护RSC/DB映射和
+整个TCS3事务。匹配VRM0100/42c00/aux012a0000才发两条带响应的1800mV/enable1；
+mode不变，未知retained值/occupied/conflict拒绝，未确认事务保持quarantine。
+Goodix在RESET低时请求供电；ACK后核对observer ready/enable/valid再释放RESET。
+不是保留电源假设，也不绕过chip checksum/config/HID资格门。
+target mask翻译表0b0e0ed0实际为0,1,2…，owner mask4因此允许DRV2。
+
+自动复位试验console-20261114-034402.log147952B：absolute300/idle0、fastboot
+primed和armed均出现，317.65s USB断开，capture末态fastboot。expiry行未抓到，
+因此定时原因由配置/时间及末态支持，不把USB断开单独当复位证明。
+
