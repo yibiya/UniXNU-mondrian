@@ -1032,7 +1032,7 @@ index 0000000..b033b90
 +}
 +/* Actual K60 goodix_htc_enable(false), coordinate-only mode:
 + * stop raw frames (90/00), then enable touch coordinates (91/01).
-+ * 91/81 is the combined/raw path, which this report consumer does not use. */
++ * 91/81 belongs to the nonzero host-mode branch; its report ABI is unqualified. */
 +static bool
 +goodix_coordinate_mode(void)
 +{
