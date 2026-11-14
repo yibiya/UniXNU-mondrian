@@ -13,6 +13,7 @@
 - Wi-Fi、蓝牙、音频、电量没有新增资格；电量阻塞于真实 PAS1/exclusive GLINK handoff，未发布假电量。
 - 正常候选已实测：`console-20261114-051254.log`（148888B），`gprobe=0` 时仍打开真实 touch/button HID，完成 count60→1/readback；后续 3627 帧 / 59984ms（约 60.5Hz）。300秒定时已armed/fastboot primed，317.72s USB结束，capture及最终设备查询均为 `be74ba07 fastboot`，已留fastboot供明早验收。
 - 用户带走手机期间暂停全部上机操作；下一轮采用离线准备的新镜像。已撤回“fw_buffer改写证明配置被消费”等无依据结论，详见 Goodix 方案第17/18节。
+- 离线候选已构建：`E:\k60-ios\boot-touch-complete-20261114.img`，SHA256 `30edafba1a4e7e05d39d5c0c2792f4542dcfc2253210ca8ac97566fded7ffa5f`；编译内核 `38d176c2`、payload内核 `2d7d0b57`、源码 `58f2b3e91fe14dfe7383b857be3820c1fbdbf1ba`。独立 ACK/state 等待已跑主机回归；UEFI/DTB/原参数/300秒复位保持。该候选未上机，等用户返回后测试；仍在核对本机 HTC 坐标模式。
 
 ## 最新状态（2026-11-09 12:30，覆盖下面的旧记录）
 

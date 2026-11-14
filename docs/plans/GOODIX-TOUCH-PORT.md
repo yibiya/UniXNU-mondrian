@@ -854,4 +854,28 @@ header 恒 `00 ab 6d 7b 82 93 28 6b`。`fw_buffer` 首字被改写只是缓冲�
 - 使用16字节命令/回包；配置写入之前核对 IC-info 的 fw_buffer_capacity；WRITE 失败仍执行 EXIT 结束事务。不根据 fw_buffer 的暂存内容宣称配置生效。
 - 回归场景已在主机运行：ACK80但state00超时失败、延迟state80完成、普通坐标命令不要求配置state、回包读失败、checksum ACK04拒绝。
 - fw_state/diff 取证打印各自真实读取结果，只在读成功时输出数据。维持原校验、真实HID派发、显示修复和300秒回fastboot；无合成触点。
+- `0x90/00` 在公开 Berlin-D 源码是 raw/diff debug 模式退出，不足以证明 Xiaomi 坐标上报已启用。实际 Android 模块含 `goodix_htc_enable` / `goodix_htc_enable_touch_coord`，继续核对实际实现；不猜测另一个启动命令。
+
+
+完成状态候选已离线构建：源码 `58f2b3e91fe14dfe7383b857be3820c1fbdbf1ba`；
+编译内核 `38d176c2f1495b99983003b6833afa2532a5bfc5f1753e3ea433a350b4cf35a4`；
+FAT中实提payload内核 `2d7d0b57fdaa3769af3fb312921026d4f09ce2a8a12545cbe68fff4a6f2911fc`。
+镜像 `E:\k60-ios\boot-touch-complete-20261114.img` SHA256
+`30edafba1a4e7e05d39d5c0c2792f4542dcfc2253210ca8ac97566fded7ffa5f`。
+boot header/firmware/DTB/signature与正常候选逐字节相同；只换payload，
+保留 `k60_touch_se=6 gprobe=0 k60_autoreset=300`。未上机，手机离线。
+
+## 19. 本机 Android 模块确认缺失的坐标使能
+
+实际 `goodix_core.ko` SHA256 `381b1969f45a65b5922387091b6a8e8bacd452ab5b135eab3824b079c6e6b977`。
+`goodix_htc_enable` `.text+0x10370` 的坐标专用关闭raw分支：
+- `103f0..1044c` 发送 len5 / cmd90 / data00，清除raw模式；
+- `104e8` 设置 cmd91；`104f0` 对调用参数为false的分支读取模式；
+- 模式0：`104fc` 设置 data01；非0：`10590` 设置 data81；`10598..105b8` 发送 len5 命令。
+- `.rodata+0x669` 是 `goodix_htc_enable_touch_coord`，`+0x8796` 日志为 `success send touch data cmd`。对应指令与重定位已保存到 `work/deploy-repair/actual-goodix-htc-enable.txt`。
+
+XNU 的 8字节header/8字节point 消费者使用坐标专用路径，不使用 THP raw/combined模式。
+因此完整切换为 `90/00 → 91/01`，两次真实 ACK 都通过才发布输入；reset request后重新执行该模式切换。
+此前仅 `90/00` 退出raw模式但没有执行坐标使能，是直接的协议缺项；是否能恢复手指响应仍需下次实机验证。
+回归覆盖第二条命令拒绝时整个坐标模式失败，避免只确认 raw-off 就宣布输入ready。
 
