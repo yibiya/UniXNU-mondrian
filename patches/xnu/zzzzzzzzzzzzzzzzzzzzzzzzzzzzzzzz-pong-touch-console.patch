@@ -16,7 +16,7 @@ new file mode 100644
 index 0000000..b033b90
 --- /dev/null
 +++ b/bsd/dev/pong_goodix.c
-@@ -0,0 +1,1402 @@
+@@ -0,0 +1,1412 @@
 +/* Goodix Berlin-D on Redmi K60 / SM8475. Adapted from HackiOS
 + * redwood_goodix.c (APSL 2.0) and the Pong driver. Board resources come
 + * from the K60 live FDT; Berlin framing follows the Linux transport. */
@@ -1030,13 +1030,25 @@ index 0000000..b033b90
 +    printf("goodix: %s completion timeout state=%02x ack=%02x\n", what, reply[0], reply[1]);
 +    return false;
 +}
++/* Actual K60 goodix_htc_enable(false), coordinate-only mode:
++ * stop raw frames (90/00), then enable touch coordinates (91/01).
++ * 91/81 is the combined/raw path, which this report consumer does not use. */
++static bool
++goodix_coordinate_mode(void)
++{
++    const uint8_t raw_off = 0, coordinates_on = 1;
++    if (!goodix_command(5, 0x90, &raw_off, 1, "RAW-OFF")) return false;
++    if (!goodix_command(5, 0x91, &coordinates_on, 1, "COORD-ON")) return false;
++    sleep_ms(50);
++    return true;
++}
++
 +
 +static bool
 +goodix_apply_config(uint32_t fw_buffer)
 +{
 +	unsigned off = 0, bad = 0;
 +    bool committed = false;
-+	const uint8_t coordinate = 0x00;
 +
 +    if (!fw_buffer || sizeof(k60_cfg) > fw_buffer_capacity ||
 +        fw_buffer > 0xffffffffu - sizeof(k60_cfg)) {
@@ -1059,9 +1071,7 @@ index 0000000..b033b90
 +    if (!committed || !exited) return false;
 +    /* Configuration transfer does not use the firmware ISP reset path. */
 +    sleep_ms(100);
-+	if (!goodix_command(5, 0x90, &coordinate, 1, "COORD-MODE")) return false;
-+	sleep_ms(50);
-+	return true;
++    return goodix_coordinate_mode();
 +}
 +
 +/* Which fingers were down in the last report, and where. */
@@ -1197,7 +1207,7 @@ index 0000000..b033b90
 +         * before another read; never preserve stuck HID fingers across reset. */
 +        goodix_release();
 +        touch_reset();
-+        if (!goodix_probe(true)) return false;
++        if (!goodix_probe(true) || !goodix_coordinate_mode()) return false;
 +        return goodix_write(touch_address, &zero, 1);
 +    }
 +    if (report[0] & GOODIX_STATUS_TOUCH) goodix_report(report + 8, count);

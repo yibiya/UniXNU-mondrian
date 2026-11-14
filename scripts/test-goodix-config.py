@@ -28,7 +28,7 @@ static bool goodix_read(uint32_t address, uint8_t *data, uint32_t length) {
     reads++;
     if (scenario == 3 && reads == 2) return false;
     memset(data, 0, length);
-    data[1] = scenario == 4 ? 0x04 : 0x80;
+    data[1] = scenario == 4 || (scenario == 5 && written[3] == 0x91) ? 0x04 : 0x80;
     /* ACK is immediate; firmware state is independently delayed or absent. */
     if (scenario == 1 && reads >= 4) data[0] = 0x80;
     return true;
@@ -63,6 +63,12 @@ int main(void) {
     reset(4);
     assert(!goodix_config_command(0x04, "checksum-rejected"));
     assert(reads == 1 && writes == 1 && slept == 0);
+    reset(2);
+    assert(goodix_coordinate_mode());
+    assert(writes == 2 && reads == 2 && written[3] == 0x91 && written[4] == 1);
+    reset(5);
+    assert(!goodix_coordinate_mode()); /* Raw-mode exit alone is not coordinate enable. */
+    assert(writes == 2 && reads == 2 && slept == 2);
     puts("ACK-only config rejected; delayed state completes; ordinary ACK and I/O errors distinguished");
 }
 '''
