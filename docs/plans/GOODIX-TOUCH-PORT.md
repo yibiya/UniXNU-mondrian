@@ -819,34 +819,39 @@ ACK前8字节header/checksum；打印IC-info实际configID/version/fwstate/buffe
 继续对照实际Android Goodix配置发送/固件扫描协议，取证后移除此临时诊断。
 
 
-实际`console-20261114-121220.log`150623B（诊断镜像boot-touch-report，
-内核0cd7159f）：首次抓到ACK前真实header——持续点击滑动全程
-`physical poll=0..2944 irq=1 reset=1 avdd=1 header=00 a9 6d 7b 82 93 28 6b
-checksum=0`。状态字节恒0x00：传输层正常（SPI读回真实数据非全0/全FF），
-IRQ高、RESET释放、IOVDD/AVDD在，但芯片从未锁存触摸事件。同一日志证实
-`active config=0x640fdf7d version=70`与下载包内嵌config ID/版本一致，
-CFG-START/DL1488/WRITE/EXIT/COORD全部ACK80。结论：配置身份正确、
-命令被接受，但固件未进入扫描/上报——与厂商goodix_brl_hw.c:428-468对照，
-我们只查了ack[1]==0x80，没有等状态字节0==0x80的完成确认，且EXIT后立即
-复位（厂商不复位，复位是独立ISP路径）。
+实际 `console-20261114-121220.log` 150623B（内核 `0cd7159f`）记录
+27 个 ACK 前采样：`poll=0..2944`、IRQ=1、RESET=1、AVDD GPIO=1，
+header 恒为 `00 a9 6d 7b 82 93 28 6b`，checksum 不通过。
+用户持续点击滑动，但没有有效触点。身份及配置缓冲区的校验/readback通过，
+不能据此证明每次 report 读取有效、模拟供电合格或感知已工作。
+配置 ID `640fdf7d` / version `0x46`（十进制70）与 Android 记录一致。
 
-已实施最小协议修正（commit 016b384，内核45069054）：
-1) goodix_command_ack要求ack[0]==0x80才算命令完成；
-2) CFG-EXIT后不再复位，sleep 100ms后读回fw_buffer首字作为应用证据。
+`016b384` 曾尝试配置完成状态门控并移除 EXIT 后复位；实际代码仍在
+`ack[1]==80` 时提前返回，即使 `state[0]!=80`，门控没有真正修复。
+厂商 `goodix_brl_hw.c:352-539` 明确区分命令接受（ack[1]）与
+START/WRITE/EXIT 配置完成（state[0]），不能混为一个条件。
 镜像`boot-touch-cfgfix-20261114.img`sha256
 `366e797e749635856fda9295b5996fb98bb5852eeef68de4a4d295262668d7c0`，
-UEFI/DTB/参数不变。等待上机验证。
+UEFI/DTB/参数不变；该轮未修复触摸，见下方实测。
 
 
-实际`console-20261114-122002.log`203804B（cfgfix镜像366e797e，内核
-45069054）：状态门控生效——CFG-START/WRITE/EXIT/COORD全部ack80且新增
-`CFG applied first word 6e 00 3b 00`证明EXIT后固件确实消费了配置
-（fw_buffer不再等于下载的4e 4d 00 00）。但持续点击滑动下header状态字节
-依然恒0x00（`physical poll=0..2944 ... header=00 ab 6d 7b ...`），
-仅第2字节在两轮间a9→ab变化，说明固件活着在写报告区、却从不锁存触摸
-事件。结论收窄：命令/配置/复位生命周期全部正确，故障在固件扫描或报告
-合成层。新增有界fw_state(0x10218,92B)与mutual_diffdata首8字节采样
-(commit e218787, 内核627d987a)，镜像`boot-touch-fwstate-20261114.img`
-sha`e2bff815...`：diff随手指变化→模拟感知正常只差报告合成；diff恒定→
-AFE/校准/模拟供电问题。等待上机判别。
+实际 `console-20261114-122002.log` 203804B（内核 `45069054`）仍无触点，
+header 恒 `00 ab 6d 7b 82 93 28 6b`。`fw_buffer` 首字被改写只是缓冲区
+内容变化，不能证明配置应用成功；两次启动的 header 不同也不能证明运行中
+扫描或报告区持续更新。此前相关结论撤回。
+
+`console-20261114-124218.log` 204079B（内核 `627d987a`，源码 `e218787`）：
+27 个样本中 header 只有1种，fw_state首字节有26种值，4路 diff 有27种值。
+采样没有全矩阵、无按下/未按下的配对基线，不能区分手指感知与噪声。
+真实按键仍有 HID sent=1，触摸仍未出现真实 down/move/up。
+用户带走设备期间只做离线分析、修复和构建，不启动任何上机任务。
+
+
+## 18. 离线修复配置完成边界
+
+- 对照厂商固定提交 `58cc7874` 的 `goodix_brl_hw.c:352-539`：命令 ACK 与配置完成分别检查，START/WRITE/EXIT 均需 state80；命令结构16字节。
+- 修复旧 `ack80` 提前返回：普通命令仅确认 ACK，配置命令随后独立等待 state80（最多20次、每次20ms）；失败不得发布输入设备。
+- 使用16字节命令/回包；配置写入之前核对 IC-info 的 fw_buffer_capacity；WRITE 失败仍执行 EXIT 结束事务。不根据 fw_buffer 的暂存内容宣称配置生效。
+- 回归场景已在主机运行：ACK80但state00超时失败、延迟state80完成、普通坐标命令不要求配置state、回包读失败、checksum ACK04拒绝。
+- fw_state/diff 取证打印各自真实读取结果，只在读成功时输出数据。维持原校验、真实HID派发、显示修复和300秒回fastboot；无合成触点。
 

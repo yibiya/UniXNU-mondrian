@@ -9,9 +9,10 @@
 - 触摸供电故障已实测修复：目标 RPMh 请求 ACK，observer 确认 ready/enable/valid 1800mV；BERLIN/9916R 固件及 IC-info 校验、1488 字节配置及坐标模式 ACK 均通过。
 - `console-20261114-050030.log`：BackBoard 打开真实 touch/button 设备、显示集成 digitizer、tap-to-wake 服务，进入物理样本读取循环。
 - 同轮面板 INTF1 从约 1.01Hz 恢复到 3635 帧 / 59983ms（约 60.6Hz）；不宣称 120Hz 或未经观察的可见流畅度。
-- 手指 down/move/up、多点释放、边缘手势及可见动画尚无物理验收；不得用模拟输入替代。
+- 用户已实机确认帧率恢复，但触摸仍无响应；电源/音量三键 down/up 有 HID sent=1。`console-20261114-124218.log` 27个 inactive header 恒0，fw_state/diff有变化，不足以证明手指感知或配置完成。触摸保持未验收；后续镜像修复独立 ACK/state 完成等待，离线构建后再测试，不生成假触点。
 - Wi-Fi、蓝牙、音频、电量没有新增资格；电量阻塞于真实 PAS1/exclusive GLINK handoff，未发布假电量。
 - 正常候选已实测：`console-20261114-051254.log`（148888B），`gprobe=0` 时仍打开真实 touch/button HID，完成 count60→1/readback；后续 3627 帧 / 59984ms（约 60.5Hz）。300秒定时已armed/fastboot primed，317.72s USB结束，capture及最终设备查询均为 `be74ba07 fastboot`，已留fastboot供明早验收。
+- 用户带走手机期间暂停全部上机操作；下一轮采用离线准备的新镜像。已撤回“fw_buffer改写证明配置被消费”等无依据结论，详见 Goodix 方案第17/18节。
 
 ## 最新状态（2026-11-09 12:30，覆盖下面的旧记录）
 
