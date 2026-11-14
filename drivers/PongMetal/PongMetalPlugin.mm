@@ -41,6 +41,12 @@ static void report(const char *phase,int status)
     if(!sysctlnametomib("kern.pong_diagnostic",mib,&count))
         (void)sysctl(mib,(u_int)count,NULL,NULL,line,strlen(line));
 }
+// PongMetalScanout.h reaches this frame-pacing sink through a function pointer, so the
+// presenter can report stage costs on the same bounded kernel diagnostic channel.
+static void reportFrame(const char *text,int status)
+{
+    report(text,status);
+}
 #include "PongMetalScanout.h"
 #include "PongQuartzCorePolicy.h"
 namespace {

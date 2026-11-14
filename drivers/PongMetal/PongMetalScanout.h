@@ -131,6 +131,7 @@ static void start(void *iokit,unsigned service,id<MTLDevice> device)
     if(status || !address || length<mode.bytes){close(connection);report("scanout mapping refused",status?:-1);return;}
     auto *presenter=new gpupresent::Presenter(device,{reinterpret_cast<void *>(address),size_t(mode.bytes),
         size_t(mode.stride),uint32_t(mode.width),uint32_t(mode.height)});
+    presenter->sink(reportFrame);
     if(!presenter->ready()) {
         // The import can own pinned memory even when creation fails. Keep its
         // connection/backing for teardown rather than silently recycle it.
