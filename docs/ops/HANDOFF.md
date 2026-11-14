@@ -13,7 +13,9 @@
 - Wi-Fi、蓝牙、音频、电量没有新增资格；电量阻塞于真实 PAS1/exclusive GLINK handoff，未发布假电量。
 - 正常候选已实测：`console-20261114-051254.log`（148888B），`gprobe=0` 时仍打开真实 touch/button HID，完成 count60→1/readback；后续 3627 帧 / 59984ms（约 60.5Hz）。300秒定时已armed/fastboot primed，317.72s USB结束，capture及最终设备查询均为 `be74ba07 fastboot`，已留fastboot供明早验收。
 - 用户带走手机期间暂停全部上机操作；下一轮采用离线准备的新镜像。已撤回“fw_buffer改写证明配置被消费”等无依据结论，详见 Goodix 方案第17/18节。
-- 下一轮测试镜像已准备：`E:\k60-ios\boot-touch-coordinate-20261114.img`，SHA256 `1a9ba8fa77a4500315845278a7b30d5800f3bf991bce975f390f439cce12271b`；编译内核 `828324c3`、payload内核 `a827414f`、源码 `184d9989a97750916601eddc07e4ed250b0762a7`。除独立 ACK/state 配置完成外，补上本机 `goodix_htc_enable(false,mode0)` 的 `90/00 → 91/01` 坐标使能。两次ACK均通过才发布输入；reset后重启同一模式。UEFI/DTB/原参数/300秒复位保持；已主机回归、构建和FAT提取核验，未上机。等用户返回测试；旧 complete 候选仅作对照，不是下一轮首选。
+- **触摸已实测打通**（`console-20261114-135839.log`，7722819B，镜像 `boot-touch-coordinate-20261114.img` / sha `1a9ba8fa…`）：`CFG-START/WRITE/EXIT completed state=80`、`RAW-OFF ack=80`、`COORD-ON ack=80`；随后真实 `header=80 …` 校验通过，内核 `type=1/2` 触点，BackBoard `HID dispatched type=1/2/3`（手指0/1/2）。根因：旧代码只发 `90/00`，缺本机 Android 的 `91/01` 坐标使能；配置完成也没真正等 `state=80`。
+- 生产候选（已移除逐帧诊断）：`E:\k60-ios\boot-touch-prod-20261114.img`，SHA256 `d1ee295c6a9707e323f0615acaa93e9e31da09cfb04a1bf768028c6c6b116abe`，编译内核 `99b634c3`，源码 `2a7b200`。header/firmware/DTB/signature 与已合格正常镜像逐字节相同，保留 `k60_touch_se=6 gprobe=0 k60_autoreset=300`。**尚未上机**。
+- 遗留：本轮 2 次 header、6 次 contact 校验失败，疑似逐帧 fw_state/diff 诊断读取与清状态竞争；生产版已移除该读取，需实机确认失败数不再增长。多点同时触点、边缘手势与持续帧率仍待正式验收。
 
 ## 最新状态（2026-11-09 12:30，覆盖下面的旧记录）
 

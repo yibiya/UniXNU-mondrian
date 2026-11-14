@@ -14,10 +14,10 @@ paths = ["board.toml", "feeds.toml", "configs/**", ".gitmodules", ".github/**", 
 inputs = ["Identify the configuration hardware, resources and existing component interfaces for this board."]
 configuration = ["Record the board.toml fields, DTS properties and defconfig values used for configuration."]
 procedure = ["Follow the configuration stage in the porting guide and record the actual commands."]
-findings = ["Migrated from format 1 on 2026-10-28: board.toml is schema_version = 2 with soc_source sm8475 and os_profile ipados-16.6.1-20G81, the SM8475 resources live in UniXNU-sm8475-common, and the board wiring in dts/mondrian.dts.", "Fork audit 2026-10-31: mzyxsl daed6b5d44e3c62978cc0fce4e876ded2a57afc9 imported with provenance. board.toml uses an exact trust-cache list; unixnu.lock matches the explicit SM8475 feed pin. The current payload reader also accepted an exactly equal scalar hash, so the list is schema hardening rather than a proven former build blocker."]
+findings = ["Actual K60 BERLIN/9916R firmware05800263, sensor255, IC-info193/head8/point8, raw14400x32000, GPIO16MISO17MOSI18CLK19CS reset20 IRQ21 AVDD71. Identity/config transfers and real contact reports verified on this build.", "Shared owner-authorized RPMh ldoc2 1800mV/enable1 ACK; observer ready/enable/valid1800. Digital IOVDD qualification, not a measured analog rail.", "Root cause of no touch: XNU sent only 90/00 (raw debug off) and never the actual K60 module second command 91/01 (goodix_htc_enable_touch_coord). Config completion was also checked only on ack[1].", "console-20261114-135839.log7722819B on boot-touch-coordinate-20261114: CFG-START/WRITE/EXIT completed state=80, RAW-OFF ack=80, COORD-ON ack=80; header80 valid8-byte checksum, kernel type1/type2 contacts and BackBoard HID type1/type2/type3 dispatched. Physical keys0/1/2 reach HID sent1."]
 completion = ["All source pins resolve; every selected component has a record; status shows the intended overrides and patch order."]
-limits = ["Hardware inputs and implementation are pending for this board."]
-next_action = ["Inventory the required configuration inputs before implementation."]
+limits = ["8 kernel contacts and4 HID samples recorded while the user continuously swiped/tapped; the 300s window limits sample count.2 header and6 contact checksum rejections remain unexplained: per-report fw_state/diff reads inside that window may race the status clear and are removed in the production build, which is not yet hardware-tested. Multitouch finger ids0/1/2 seen; simultaneous multi-contact mapping, edge gestures and sustained cadence not yet formally verified."]
+next_action = ["Boot E:/k60-ios/boot-touch-prod-20261114.img (diagnostics removed) and re-run single tap, long swipe, two-finger cross, release and edge gestures; confirm checksum rejections do not grow and HID stays dispatched. Then record multitouch/gesture acceptance."]
 evidence = [{ kind = "source", reference = "board.toml", result = "schema_version = 2 resolves through the arch, SM8475, 20G81 and device layers; status reports three components and 83 ordered patches" }]
 
 [[area]]
@@ -92,7 +92,7 @@ evidence = [{ kind = "device", reference = "patches/xnu/0394-k60-launchd-cache.p
 
 [[area]]
 id = "input"
-status = "implemented"
+status = "device-verified"
 components = []
 paths = ["board.toml", "userland/touch.c", "userland/touch.h", "patches/xnu/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-pong-touch-console.patch", "patches/xnu/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-pong-physical-keys.patch", "scripts/*touch*", "scripts/*hid*", "scripts/make-pong-adt.py"]
 inputs = ["Identify the input hardware, resources and existing component interfaces for this board."]

@@ -891,3 +891,20 @@ payload内核 `a827414f58291730c0743acac4c3070cb975d31200231ea6f170225da709d85a`
 `COORD-ON ack=80`，以及真实 `goodix: type=` 和 `Pong touch HID: dispatched`。
 命令ACK仍不等于手指交互成功；须用户单指点击/滑动/释放与双指交叉的可见响应验收。
 
+## 20. 坐标使能后实测触摸打通
+
+`console-20261114-135839.log`（7722819B，镜像 `boot-touch-coordinate-20261114.img`，
+源码 `184d9989a97750916601eddc07e4ed250b0762a7`）：
+
+- `goodix: CFG-START completed state=80 ack=80`；WRITE/EXIT 同样完成；
+- `RAW-OFF ack=80`、`COORD-ON ack=80`（实际 K60 `goodix_htc_enable(false)` 的 `90/00 → 91/01`）；
+- 首个有效上报 `header=80 1b 01 00 00 00 9c 00 checksum=1`，随后
+  `goodix: type=1 finger=0 raw=2863,13781`；
+- 内核共 8 个触点（5 down / 3 move），BackBoard `Pong touch HID: dispatched type=1/2/3`，
+  手指编号 0/1/2 均出现；用户持续点击滑动。
+
+这证明缺失的 `91/01` 坐标使能就是无触摸的根因；命令 ACK、供电和 HID 桥本身没有问题。
+遗留 2 次 header、6 次 contact 校验失败：旧版在每次上报前插入 fw_state/diff 读取，
+会延迟状态清除；该诊断已在 `2a7b200` 移除，生产镜像
+`boot-touch-prod-20261114.img`（sha `d1ee295c…`，内核 `99b634c3`）待实机确认失败率。
+多点同时触点、边缘手势与持续帧率仍属未验收项。
