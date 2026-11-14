@@ -72,6 +72,9 @@ public:
                 for (uint32_t y = 0; y < frame.height; ++y)
                     [blit copyFromBuffer:source sourceOffset:y * frame.stride toBuffer:target_ destinationOffset:y * scanout_.stride size:row];
             } else {
+                // A linear texture is created per frame: the source import only lives for this offer/complete
+                // window, so a texture kept across frames could read recycled pages. The 3-8 ms it costs in the
+                // translated runtime requires a kernel-side lifetime guarantee, not a cache here.
                 id<MTLTexture> texture = [source newTextureWithDescriptor:d offset:0 bytesPerRow:frame.stride];
                 if (!texture) {[blit endEncoding]; return kNoResource;}
                 [blit copyFromTexture:texture sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
