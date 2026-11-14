@@ -6,37 +6,47 @@ UniXNU device support for the Redmi K60 (**mondrian**, Qualcomm **SM8475**).
 - Core: [Emilelu/UniXNU](https://github.com/Emilelu/UniXNU) (branch `k60`)
 - SoC: [Emilelu/UniXNU-sm8475-common](https://github.com/Emilelu/UniXNU-sm8475-common)
 
-## Status (2026-10-30)
+## Status (2026-11-14)
 
 | Area | State | Notes |
 | --- | --- | --- |
 | UEFI boot chain | OK | ABL -> `fastboot boot` -> BootShim -> UEFI -> UniXNU menu |
-| Display | OK | ABL splash framebuffer + SimpleFbDxe GOP, 1440x3200, 5760 B stride; no GPU acceleration |
-| Buttons | OK | Official KeypadDevice chain + `K60KeypadDeviceLib` (SPMI PON/GPIO) |
-| Tools -> Advanced Logger | OK | 4 MB Advanced Logger + QR frames; OneSend captures the DXE log |
-| XNU kernel | OK | builds on Linux (WSL) and on the macOS CI; `kernel.macho` 53.5 MB with prelink |
-| Board ADT / payload / boot image | OK | 192 MiB payload + Android boot v4 image; verify with `scripts/verify-k60-boot-img.sh` |
-| UFS root (SHNGROOT) | OK | OS and SystemOS read-only windows, union-mounted on `/` |
-| `/private/var` (Data) | RO only | real UFS Data window at offset `7,780,433,920`, 32 MiB, mounts read-only |
-| keybag / MKB | FAIL | Data is not writable, so `systembag.kb` cannot be written and MKB goes fatal |
-| Touch / GPU / audio / network / camera | TODO | not started; the GPU driver source (with `submit/`) is already in `drivers/PongAdreno/` but not linked |
+| Display | OK | 1440x3200 panel, INTF1 measured at 60.5 Hz |
+| Buttons | OK | KeypadDevice chain; `Pong keys 0/1/2 down/up` -> HID `sent=1` |
+| Tools -> Advanced Logger | OK | 4 MB Advanced Logger + QR frames |
+| XNU kernel | OK | builds on Linux (WSL) and macOS CI |
+| Board ADT / payload / boot image | OK | 192 MiB payload + Android boot v4 image |
+| UFS root (SHNGROOT) | OK | OS and SystemOS windows union-mounted on `/` |
+| Data volume | OK | writable APFS Data window on the dedicated `unixnu` partition |
+| Touch (Goodix BERLIN 9916R) | OK | `COORD-ON ack=80`, real validated `header=80` reports, kernel `type=1/2` contacts, BackBoard `HID dispatched type=1/2/3` |
+| GPU (Adreno 730 v3) | OK, performance open | GMU/HFI, CP fences, Metal device and scanout all `status=0x0`; pacing still uneven (32 fps, 167/178 swaps one refresh late, 14.1 ms/frame in the driver) |
+| Battery | BLOCKED | needs the real PAS1/exclusive GLINK handoff; no fabricated status |
+| Audio / WiFi / Bluetooth / camera / sensors | TODO | research complete, implementation in progress |
 
-Measured: XNU reaches `launchd` and the service chain proceeds to `watchdogd`
-(pid 95); `/private/var` mounts for the first time from the real UFS Data window,
-read-only.
+### Plan
 
-## Open blockers (2026-10-30)
+| Priority | Target | Criterion |
+| --- | --- | --- |
+| P0 | GPU frame pacing | Cut per-frame driver cost below the 16.7 ms budget so `came a refresh late` drops sharply |
+| P1 | Touch multitouch and gestures | simultaneous contacts, edge back gesture, sustained cadence; confirm checksum rejections stop growing |
+| P1 | Battery | real PAS1/exclusive GLINK handoff |
+| P2 | Audio / WiFi / Bluetooth / camera / sensors | stage-by-stage implementation |
 
-1. **The APFS read-write mount hangs** after the space-manager scan. A bounded
-   `K60UFS write#N` trace is in place (`drivers/NativeUfs/`); it has not yet told
-   us whether the UFS write itself stalls or APFS stalls internally.
-2. **32 MiB Data is too small.** The same-SoC sirius board hit ENOSPC on a 32 MiB
-   Data volume and trapped in watchdogd (`brk #1`). Growing it needs a new APFS
-   seed, which only `hdiutil`/`newfs_apfs` on macOS can produce.
-3. **Switching filesystems has a prerequisite.** The 20G81 kernelcache contains
-   `com.apple.filesystems.hfs` and `com.apple.filesystems.tmpfs`, but neither is
-   in this repository's prelink root list, so `mount("hfs")` / `mount("tmpfs")`
-   currently fails with ENODEV. The core prelink configuration has to change first.
+
+Measured: XNU reaches `launchd`, and `/private/var` mounts read-write from the
+dedicated `unixnu` partition (`K60DATA mounted ro=0 fstype=apfs`,
+`K60UFS write#N -> result=0`).
+
+## Open blockers (2026-11-14)
+
+1. **GPU frame pacing, not capability.** Every stage publishes `status=0x0`, but
+   each frame costs ~14.1 ms in the driver against a 16.7 ms budget, so
+   167 of 178 swaps arrive one refresh late. Work is bounded copy/completion
+   batching, not another capability probe.
+2. **Touch checksum rejections.** Two header and six contact checksum failures
+   appeared in the same run that delivered real contacts. The per-report
+   `fw_state`/`diff` diagnostics that could race the status clear are removed;
+   the production image must show that the count stops growing.
 
 ## Build
 

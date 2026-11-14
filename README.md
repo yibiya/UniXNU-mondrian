@@ -4,7 +4,7 @@ Redmi K60（代号 **mondrian**，高通 **SM8475**）的 UniXNU 设备支持仓
 
 **当前目标：iOS 16.6.1（20G81）/ darwin22 上跑通完整硬件。**
 
-> 本 README 最后更新：2026-11-09。历史路线（darwin24 / iPadOS 18.7.10）已归档到 `archive/darwin24-main-20261103` 分支，不再维护。
+> 本 README 最后更新：2026-11-14。历史路线（darwin24 / iPadOS 18.7.10）已归档到 `archive/darwin24-main-20261103` 分支，不再维护。
 
 ## 分支
 
@@ -16,7 +16,7 @@ Redmi K60（代号 **mondrian**，高通 **SM8475**）的 UniXNU 设备支持仓
 
 提交规范见 `AGENTS.md` 铁律 11：**改动后及时 commit，阶段性成果及时 push**（push 用 Windows 侧 git）。
 
-## 当前状态（2026-11-12）
+## 当前状态（2026-11-14）
 
 | 项 | 状态 | 证据 |
 |---|---|---|
@@ -24,12 +24,21 @@ Redmi K60（代号 **mondrian**，高通 **SM8475**）的 UniXNU 设备支持仓
 | UFS / APFS 三窗（OS / SystemOS / Data） | ✅ | `PONG APFS: OS root binding PASS`、`K60DATA mounted ro=0 fstype=apfs` |
 | 显示首帧（1440×3200） | ✅ | `K60 DISPLAY: first frame presented (swap 1)` |
 | 背光（DCS 0x11/0x29/0x51） | ✅ | `K60 PANEL: bring-up complete` |
-| 桌面 / SpringBoard | 设备通过 | cand7：用户看到状态栏、App Store、Settings、Dock；主循环 `turns=3889`、持续 BGRA swaps |
+| 桌面 / SpringBoard | ✅ | 状态栏、App Store、Settings、Dock；主循环 `turns=3889`、持续 BGRA swaps |
 | launchd 稳定 | ✅ | 禁用 8 个 App-cryptex job 后不再 `initproc exited` |
-| **实体键（电源/音量）** | 🔄 | 驱动已编译/链接/调用（`bsd_init.o` 有 `U _pong_buttons_init`），`configuration()` 结果不可观测 |
-| **触摸** | 待设备验证 | 已补实际 DT 节点、GPIO71、raw14400×32000、受检 Berlin 报告；删除错误 Pong 供电/RSC 路径。FIFO 禁用需要真实 GPI 或已证实的 GPIO 线序 |
-| GPU（Adreno730v3） | 待设备验证 | 启用实际归档；使用本机 GMU/SQE/ZAP 固件，APSS RSC 仅通过文档定义的 Qualcomm monitor I/O，不直接读挂机寄存器；须验证真实 CP/fence/Metal |
-| WiFi / 蓝牙 / 音频 / 相机 / 传感器 / 电源 | 📋 | 八步调研已完成，实现进行中 |
+| 实体键（电源/音量） | ✅ 设备通过 | `Pong keys: 0/1/2 down/up` → `Pong keys HID: key=N ... sent=1` |
+| **触摸** | ✅ 设备通过 | `console-20261114-135839.log`：`CFG-* completed state=80`、`RAW-OFF ack=80`、`COORD-ON ack=80`；真实 `header=80` 校验通过，内核 `type=1/2` 触点，BackBoard `HID dispatched type=1/2/3` |
+| **GPU（Adreno730v3）** | ✅ 设备通过（性能未达标） | 22 阶段 GMU/HFI、CP fence、Metal 设备与 scanout 全部 `status=0x0`；面板 INTF1 实测 60.5Hz。**呈现节拍仍不稳**：32 fps、167/178 次 swap 晚一帧，driver 14.1 ms/帧 |
+| WiFi / 蓝牙 / 音频 / 相机 / 传感器 / 电源 | 📋 | 八步调研已完成，实现进行中；电量阻塞于真实 PAS1/exclusive GLINK handoff |
+
+### 计划表（下一阶段）
+
+| 优先级 | 对象 | 现状与判据 |
+|---|---|---|
+| P0 | GPU 呈现节拍 | 每帧 driver 时间 14.1 ms，接近 16.7 ms 预算；167/178 swap 晚到。目标是降低单帧拷贝/提交成本，使 `came a refresh late` 显著下降 |
+| P1 | 触摸多点/手势 | 已见手指 0/1/2；同时多点映射、边缘返回手势、持续帧率未正式验收；2 次 header/6 次 contact 校验失败待确认不再增长 |
+| P1 | 电量 | 需要真实 PAS1/exclusive GLINK handoff，未发布假电量 |
+| P2 | 音频 / WiFi / 蓝牙 / 相机 / 传感器 | 按八步矩阵逐项实现 |
 
 详细状态与缺口矩阵见 [`E:\k60-work\docs\PORTING-PIPELINE.md`](file:///E:/k60-work/docs/PORTING-PIPELINE.md)。
 
@@ -58,13 +67,24 @@ Redmi K60（代号 **mondrian**，高通 **SM8475**）的 UniXNU 设备支持仓
 ## 构建
 
 ```bash
-# 内核（Linux/WSL）
-tr -d '\r' < E:/k60-work/scratch/buildv15.sh > /tmp/b.sh && bash /tmp/b.sh
-# 产物
-#   /opt/k60/trees/k60build/out-baseline/mondrian/ipados-16.6.1-20G81/mondrian/kernel/kernel.macho
-# 打包 boot 镜像
-tr -d '\r' < E:/k60-work/scratch/packv15.sh > /tmp/p.sh && bash /tmp/p.sh
-#   → E:/k60-work/usb-a-stage/out/boot-v15-20261108.img
+# 内核（Linux/WSL，框架仓根目录）
+python3 core/unixnu build kernel -D work/device-ui --out work/out-cand --skip-setup -j 8
+# payload
+python3 core/unixnu build payload -D work/device-ui --out work/out-cand -j 8
+# 换 payload 进 boot 镜像（保留原 firmware/DTB/签名页）
+python3 work/device-ui/scripts/repack-boot.py \
+  --template /mnt/e/k60-ios/boot-k60-morning-20261114.img \
+  --ramdisk work/out-cand/mondrian/ipados-16.6.1-20G81/mondrian/payload/payload.img \
+  --output /mnt/e/k60-ios/boot-next.img
+```
+
+`repack-boot.py` 只替换 payload 槽；header、压缩 firmware、附加 DTB 与未签名区保持不变，
+可用 `mcopy -i <payload> ::/EFI/UniXNU/Payloads/kernel.macho` 提取实际内核核对哈希。
+
+配置完成与坐标使能都有主机回归（不需要设备）：
+
+```bash
+python3 work/device-ui/scripts/test-goodix-config.py
 ```
 
 UI 兼容库部署前必须同步源码和 `0340` 内嵌数组，不能只修改 `ui_compat.c`：
@@ -94,9 +114,15 @@ python3 userland/build.py launchd_cache --jobs /path/to/pong/LaunchDaemons --out
 ```
 
 触摸首轮沿用桌面 cand7 的固件、内存与 root/Data，仅增加 canonical
-`/arm-io/pong-touch`。`k60_touch_se=5 k60_touch_rcg=1` 只读实际 ID；默认
-stage6 才发布 `/dev/pong-touch` 并把校验正确的触点交给 backboardd HID。
+`/arm-io/pong-touch`。`k60_touch_se=5` 只读实际 ID；默认 stage6 才发布
+`/dev/pong-touch` 并把校验正确的触点交给 backboardd HID。
 `bitbang-pins` 必须来自独立确认的 MISO/MOSI/CLK/CS 线序，不能扫描排列猜。
+
+Berlin-D 的初始化顺序是硬约束，缺一步就没有触点：
+1. 配置命令 `CFG-START/WRITE/EXIT` 各自要等 `state=80` 完成，不能只看 `ack=80`；
+2. 退出 raw 调试帧 `90/00` 之后，还必须发 **`91/01` 坐标上报使能**
+   （本机 `goodix_htc_enable_touch_coord`）；只发 `90/00` 时上报区永远是 `status=0`。
+
 ARM64 的启动参数容量是608字节，新增阶段参数前仅移除诊断用
 `applog=1 applog_name=SpringBoard`；不改 Data UUID、内嵌 PID1 或桌面兼容策略。
 
