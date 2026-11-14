@@ -818,3 +818,22 @@ ACK前8字节header/checksum；打印IC-info实际configID/version/fwstate/buffe
 不改变显示、电源、report解析和真实输入派发；不生成假触点。
 继续对照实际Android Goodix配置发送/固件扫描协议，取证后移除此临时诊断。
 
+
+实际`console-20261114-121220.log`150623B（诊断镜像boot-touch-report，
+内核0cd7159f）：首次抓到ACK前真实header——持续点击滑动全程
+`physical poll=0..2944 irq=1 reset=1 avdd=1 header=00 a9 6d 7b 82 93 28 6b
+checksum=0`。状态字节恒0x00：传输层正常（SPI读回真实数据非全0/全FF），
+IRQ高、RESET释放、IOVDD/AVDD在，但芯片从未锁存触摸事件。同一日志证实
+`active config=0x640fdf7d version=70`与下载包内嵌config ID/版本一致，
+CFG-START/DL1488/WRITE/EXIT/COORD全部ACK80。结论：配置身份正确、
+命令被接受，但固件未进入扫描/上报——与厂商goodix_brl_hw.c:428-468对照，
+我们只查了ack[1]==0x80，没有等状态字节0==0x80的完成确认，且EXIT后立即
+复位（厂商不复位，复位是独立ISP路径）。
+
+已实施最小协议修正（commit 016b384，内核45069054）：
+1) goodix_command_ack要求ack[0]==0x80才算命令完成；
+2) CFG-EXIT后不再复位，sleep 100ms后读回fw_buffer首字作为应用证据。
+镜像`boot-touch-cfgfix-20261114.img`sha256
+`366e797e749635856fda9295b5996fb98bb5852eeef68de4a4d295262668d7c0`，
+UEFI/DTB/参数不变。等待上机验证。
+
