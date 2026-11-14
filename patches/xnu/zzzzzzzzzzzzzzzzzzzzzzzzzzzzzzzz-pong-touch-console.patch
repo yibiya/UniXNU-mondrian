@@ -16,7 +16,7 @@ new file mode 100644
 index 0000000..b033b90
 --- /dev/null
 +++ b/bsd/dev/pong_goodix.c
-@@ -0,0 +1,1375 @@
+@@ -0,0 +1,1390 @@
 +/* Goodix Berlin-D on Redmi K60 / SM8475. Adapted from HackiOS
 + * redwood_goodix.c (APSL 2.0) and the Pong driver. Board resources come
 + * from the K60 live FDT; Berlin framing follows the Linux transport. */
@@ -1136,21 +1136,21 @@ index 0000000..b033b90
 +    if (!goodix_read(touch_address, report, first)) return false;
 +    /* Temporary physical acquisition evidence; bounded independently of IRQ.
 +     * Read the header before any status ACK, never synthesize contacts. */
-+++    if (observations < 40 && (polls < 4 || !(polls & 127u) || report[0] != last_status)) {
-+++        uint8_t state[16] = { 0 }, diff[8] = { 0 };
-+++        if (fw_state_address && fw_state_length >= 16)
-+++            goodix_read(fw_state_address, state, sizeof(state));
-+++        if (diff_address)
-+++            goodix_read(diff_address, diff, sizeof(diff));
-+++        printf("goodix: physical poll=%u irq=%u reset=%u avdd=%u header=%02x %02x %02x %02x %02x %02x %02x %02x checksum=%u fwstate=%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x diff=%02x%02x%02x%02x %02x%02x%02x%02x\n",
-+++            polls, gpio_get(PIN_INT), gpio_get(PIN_RESET), gpio_get(avdd_gpio),
-+++            report[0], report[1], report[2], report[3], report[4], report[5], report[6], report[7],
-+++            goodix_checksum_ok(report, 8),
-+++            state[0], state[1], state[2], state[3], state[4], state[5], state[6], state[7],
-+++            state[8], state[9], state[10], state[11], state[12], state[13], state[14], state[15],
-+++            diff[0], diff[1], diff[2], diff[3], diff[4], diff[5], diff[6], diff[7]);
-+++        observations++;
-+++    }
+++    if (observations < 40 && (polls < 4 || !(polls & 127u) || report[0] != last_status)) {
+++        uint8_t state[16] = { 0 }, diff[8] = { 0 };
+++        if (fw_state_address && fw_state_length >= 16)
+++            goodix_read(fw_state_address, state, sizeof(state));
+++        if (diff_address)
+++            goodix_read(diff_address, diff, sizeof(diff));
+++        printf("goodix: physical poll=%u irq=%u reset=%u avdd=%u header=%02x %02x %02x %02x %02x %02x %02x %02x checksum=%u fwstate=%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x diff=%02x%02x%02x%02x %02x%02x%02x%02x\n",
+++            polls, gpio_get(PIN_INT), gpio_get(PIN_RESET), gpio_get(avdd_gpio),
+++            report[0], report[1], report[2], report[3], report[4], report[5], report[6], report[7],
+++            goodix_checksum_ok(report, 8),
+++            state[0], state[1], state[2], state[3], state[4], state[5], state[6], state[7],
+++            state[8], state[9], state[10], state[11], state[12], state[13], state[14], state[15],
+++            diff[0], diff[1], diff[2], diff[3], diff[4], diff[5], diff[6], diff[7]);
+++        observations++;
+++    }
 +    polls++;
 +    last_status = report[0];
 +    if (!report[0]) return true;  /* no event does NOT mean all contacts lifted */
