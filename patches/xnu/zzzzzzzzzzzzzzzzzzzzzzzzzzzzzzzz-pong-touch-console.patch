@@ -16,7 +16,7 @@ new file mode 100644
 index 0000000..b033b90
 --- /dev/null
 +++ b/bsd/dev/pong_goodix.c
-@@ -0,0 +1,1368 @@
+@@ -0,0 +1,1378 @@
 +/* Goodix Berlin-D on Redmi K60 / SM8475. Adapted from HackiOS
 + * redwood_goodix.c (APSL 2.0) and the Pong driver. Board resources come
 + * from the K60 live FDT; Berlin framing follows the Linux transport. */
@@ -979,6 +979,9 @@ index 0000000..b033b90
 +	uint8_t last = 0xff;
 +	for (unsigned t = 0; t < 20; t++) {
 +		if (goodix_read(command_address, ack, sizeof(ack))) {
++			/* Vendor brl_send_cmd waits state byte0 == 0x80, not just
++			 * ack[1]: a readable ack alone never proves completion. */
++			if (ack[0] == 0x80) { last = ack[1]; break; }
 +			last = ack[1];
 +			if (last != 0x00 && last != 0xff) break;
 +		}
@@ -1030,10 +1033,17 @@ index 0000000..b033b90
 +	if (off != sizeof(k60_cfg) || bad) return false;
 +	if (!goodix_command(4, 0x05, NULL, 0, "CFG-WRITE")) return false;
 +	if (!goodix_command(4, 0x06, NULL, 0, "CFG-EXIT")) return false;
-+	gpio_set(PIN_RESET, false);
-+	sleep_ms(2);
-+	gpio_set(PIN_RESET, true);
++	/* Vendor brl_hw waits completion, EXITs, then sleeps 100 ms WITHOUT a
++	 * reset; reset is the separate firmware-ISP path and can restore the
++	 * previous flash config or race the fresh download. Read back the first
++	 * config word so the applied state is measured, not assumed. */
 +	sleep_ms(100);
++	{
++		uint8_t applied[4];
++		if (goodix_read(fw_buffer_address, applied, sizeof(applied)))
++			printf("goodix: CFG applied first word %02x %02x %02x %02x\n",
++				applied[0], applied[1], applied[2], applied[3]);
++	}
 +	if (!goodix_command(5, 0x90, &coordinate, 1, "COORD-MODE")) return false;
 +	sleep_ms(50);
 +	return true;
