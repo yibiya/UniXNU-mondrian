@@ -16,7 +16,7 @@ new file mode 100644
 index 0000000..b033b90
 --- /dev/null
 +++ b/bsd/dev/pong_goodix.c
-@@ -0,0 +1,1412 @@
+@@ -0,0 +1,1389 @@
 +/* Goodix Berlin-D on Redmi K60 / SM8475. Adapted from HackiOS
 + * redwood_goodix.c (APSL 2.0) and the Pong driver. Board resources come
 + * from the K60 live FDT; Berlin framing follows the Linux transport. */
@@ -677,7 +677,6 @@ index 0000000..b033b90
 +static uint8_t spi_tx[8 + GOODIX_MAX_READ], spi_rx[8 + GOODIX_MAX_READ];
 +static uint32_t touch_address, command_address, fw_buffer_address;
 +static uint32_t fw_buffer_capacity;
-+static uint32_t fw_state_address, fw_state_length, diff_address;
 +
 +
 +static bool
@@ -837,9 +836,6 @@ index 0000000..b033b90
 +    fw_buffer_capacity = le16(info + offset + 22);
 +    touch_address = address;
 +    command_address = command;
-+    fw_state_address = le32(info + offset + 12);
-+    fw_state_length = le16(info + offset + 16);
-+    diff_address = le32(info + offset + 60);
 +    if (verbose) printf("goodix: active config=%#x version=%u fw-state=%#x/%u fw-buffer=%#x/%u\n",
 +        le32(info + 6), info[10], le32(info + offset + 12), le16(info + offset + 16),
 +        fw_buffer_address, le16(info + offset + 22));
@@ -1146,8 +1142,6 @@ index 0000000..b033b90
 +{
 +    static uint8_t report[8 + 8 * GOODIX_MAX_TOUCHES + 2];
 +    static unsigned complaints;
-+    static unsigned polls, observations;
-+    static uint8_t last_status;
 +    const uint8_t zero = 0;
 +    const uint32_t first = 8 + 8 * 2 + 2;
 +    bool valid = true, reset = false;
@@ -1157,24 +1151,7 @@ index 0000000..b033b90
 +    if (!goodix_read(touch_address, report, first)) return false;
 +    /* Temporary physical acquisition evidence; bounded independently of IRQ.
 +     * Read the header before any status ACK, never synthesize contacts. */
-+    if (observations < 40 && (polls < 4 || !(polls & 127u) || report[0] != last_status)) {
-+        uint8_t state[16], diff[8];
-+        bool state_ok = fw_state_address && fw_state_length >= sizeof(state) &&
-+            goodix_read(fw_state_address, state, sizeof(state));
-+        bool diff_ok = diff_address && goodix_read(diff_address, diff, sizeof(diff));
-+        printf("goodix: physical poll=%u irq=%u reset=%u avdd=%u header=%02x %02x %02x %02x %02x %02x %02x %02x checksum=%u state_ok=%u diff_ok=%u\n",
-+            polls, gpio_get(PIN_INT), gpio_get(PIN_RESET), gpio_get(avdd_gpio),
-+            report[0], report[1], report[2], report[3], report[4], report[5], report[6], report[7],
-+            goodix_checksum_ok(report, 8), state_ok, diff_ok);
-+        if (state_ok) printf("goodix: fwstate=%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n",
-+            state[0], state[1], state[2], state[3], state[4], state[5], state[6], state[7],
-+            state[8], state[9], state[10], state[11], state[12], state[13], state[14], state[15]);
-+        if (diff_ok) printf("goodix: diff=%02x%02x%02x%02x %02x%02x%02x%02x\n",
-+            diff[0], diff[1], diff[2], diff[3], diff[4], diff[5], diff[6], diff[7]);
-+        observations++;
-+    }
-+    polls++;
-+    last_status = report[0];
++    if (!report[0]) return true;  /* no event does NOT mean all contacts lifted */
 +    if (!report[0]) return true;  /* no event does NOT mean all contacts lifted */
 +    if (!goodix_checksum_ok(report, 8)) {
 +        if (complaints++ < 8) printf("goodix: invalid report header checksum\n");
