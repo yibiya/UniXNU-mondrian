@@ -876,6 +876,18 @@ boot header/firmware/DTB/signature与正常候选逐字节相同；只换payload
 
 XNU 的 8字节header/8字节point 消费者使用坐标专用路径，不使用 THP raw/combined模式。
 因此完整切换为 `90/00 → 91/01`，两次真实 ACK 都通过才发布输入；reset request后重新执行该模式切换。
-此前仅 `90/00` 退出raw模式但没有执行坐标使能，是直接的协议缺项；是否能恢复手指响应仍需下次实机验证。
+此前仅 `90/00` 退出raw模式但没有执行坐标使能，是直接的协议缺项。`91/81` 属于非0的主机模式分支，未验证其报告ABI，因此不选用。mode0是本机模块实现的选择，不宣称已观测Android默认模式值；是否恢复手指响应须下次实机验证。
 回归覆盖第二条命令拒绝时整个坐标模式失败，避免只确认 raw-off 就宣布输入ready。
+
+最终测试候选已构建：`E:\k60-ios\boot-touch-coordinate-20261114.img`，SHA256
+`1a9ba8fa77a4500315845278a7b30d5800f3bf991bce975f390f439cce12271b`，201883648B。
+源码 `184d9989a97750916601eddc07e4ed250b0762a7`；编译内核
+`828324c351a7514ed9b8c10c49d6e022a1f06b30e96ff6eb1c3b4b4b3fe47e7b`；
+payload内核 `a827414f58291730c0743acac4c3070cb975d31200231ea6f170225da709d85a`。
+主机回归覆盖第二条坐标命令拒绝；实际内核/payload构建成功。
+最终FAT内提取内核核对SHA，boot header/firmware/DTB/signature与正常候选逐字节相同。
+不改已合格的显示/按键/IOVDD路径，保留stage6/gprobe0/autoreset300，未上机、无刷写。
+下次日志应分别看到 `CFG-START/WRITE/EXIT completed state=80`、`RAW-OFF ack=80`、
+`COORD-ON ack=80`，以及真实 `goodix: type=` 和 `Pong touch HID: dispatched`。
+命令ACK仍不等于手指交互成功；须用户单指点击/滑动/释放与双指交叉的可见响应验收。
 
