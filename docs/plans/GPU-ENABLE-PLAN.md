@@ -853,3 +853,31 @@ INTF1在37661ms前进38帧，约1.01Hz；单次count60→1 readback80000001。
 3627frames/59984ms（约60.5Hz），证明修复不依赖诊断开关。真实触摸/键HID已打开。
 300秒自动复位后已留fastboot，停止boot循环；glass流畅度仍待用户物理观察。
 
+
+### 7.13 呈现节拍的实测归因（2026-11-14）
+
+触摸验收同机日志 `console-20261114-135839.log`：
+
+| 指标 | 实测 |
+|---|---|
+| 帧率段 | 3 fps → 32 fps |
+| driver 每帧 | 14079 µs |
+| 晚到帧 | 167 / 178 |
+| `waitUntilCompleted` 后等待 | 1 µs |
+| pipeline 初始化 | 14 条,合计 71 ms,最长 18 ms(一次性) |
+
+结论:不是 GPU 能力问题。`GpuScanoutPresenter.h` 每帧固定
+`newBufferWithBytesNoCopy` → encode → `commit` → `waitUntilCompleted`,
+14.1 ms 已占 16.7 ms 预算的 85%,所以绝大多数 swap 晚一帧。
+
+为定位这 14.1 ms 的构成,在不改变拷贝、队列和完成语义的前提下把
+present 拆成 import / encode / commit / wait 四段计时,经既有
+`kern.pong_diagnostic` 通道输出(前 8 帧 + 每 120 帧一条):
+
+```
+GPU present #N import=..us encode=..us commit=..us wait=..us total=..us rows=.. copy=linear|texture|row
+```
+
+判据:`rows=3200 copy=row` 表示退化成逐行 3200 次 blit,必须消除;
+`wait` 占比高说明需要双缓冲/管线化;`import` 占比高说明每帧重新导入
+surface 是主因。实测前不改动同步契约。
