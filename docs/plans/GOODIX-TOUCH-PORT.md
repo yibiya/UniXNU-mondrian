@@ -532,3 +532,379 @@ Pong touch HID: type=1 finger=0 xy=...
 5. `feat(touch): wire the 20G81 userland HID bridge`——如果 `libpong-ui.dylib` 还没有在 K60 root 中自动启动 `pong_touch_start()`，补 `userland/touch.c` 的启动接线。
 
 前两步做完就可以上 P1；不要等固件加载和 kernel HID 都完成才做第一次只读 ID。
+
+## 10. 2026-11-13：初次握手失败与源码差异
+
+以当前 `gpuJ` 日志为准：`SE4 fw=0x102 protocol1 interfaces1`，FIFO不可用后
+实际GPIO SPI握手读回00三次；不再是cand15的metadata缺失。Android实读
+BERLIN/9916R、05800263；按名称找到pm8350c_l2已启用1800000uV（本轮regulator.27）。
+debugfs确认RESET20输出高、IRQ21输入高、AVDD71输出高。`/dev/mem`不存在；
+调试GPIO文本不暴露eGPIO ownership，不能由它声称XNU已控制pad。
+
+[Cape头文件](https://github.com/NothingOSS/android_kernel_msm-5.10_nothing_sm8475/blob/sm8475/t/drivers/pinctrl/qcom/pinctrl-cape.h#L13-L55)
+确认1MiB GPIO偏移正确；[msm_pinmux_set_mux](https://github.com/NothingOSS/android_kernel_msm-5.10_nothing_sm8475/blob/sm8475/t/drivers/pinctrl/qcom/pinctrl-msm.c#L241-L248)
+在bit11 present时置bit12启用APPS。当前驱动补此条件操作并打印cfg前/后与io，
+保留其他位；不清bit12、不再扫描未验证的引脚排列。
+
+Linux v6.12 `goodix_berlin_core.c:247-279` 初次上电：IOVDD→3ms→AVDD→15ms→
+释放RESET→4ms→八字节AA握手→100ms，再读固件。当前驱动此前先release+100ms，
+随后才配置SPI；改为RESET保持低直到现有transport准备完成，再按原协议握手。
+恢复reset仍保留low2/high100ms。该顺序来源证明时序差异，不证明9916R有硬4ms截止。
+GPIO角色17/18/16/19仍未由成功握手证明，若仍失败必须看真实pad/供电读数。
+
+
+Device-confirm仅在初次power-on执行一次；恢复reset之后直接读checksum有效的固件
+与IC-info，不再在100ms之后重写ROM boot-option。GPU `gprobe`暂停（置0），
+正常GPU渲染、拷贝与CPU回退不变。Host实际GPIO配置函数的四种present/enable
+组合验证通过：present时置APPS位，保留未关联控制位。
+
+
+Host检查：实际GPIO配置函数present/enable四组合与实际`bring_up`控制流夹具通过，
+总线初始化时RESET仍低、4ms后握手、成功100ms后读ID，失败保留RESET低。
+kernel/payload构建通过，`boot-touch-reset-20261113.img` sha256
+`6883848d04357e21d8916555502d78c5505511f580fd5c115cd51a8c9fe0c765`，
+源码`e6a63f50446c0616455fdbf32ba5dc827ec8cf63`，编译kernel`6d72dc8b`，
+payload kernel`d48f594b`。从确认LDO2启用的Android热重启，只用fastboot boot。
+
+
+真机`console-20261113-194925.log`（198068B）：初始化时序修正已运行，但八字节AA
+仍读回00三次，用户确认触摸无效。GPIO20/21/71及16–19的原始cfg均从0x1开始，
+bit11未置位，因此此板上eGPIO条件启用未改变ownership，不能当作此次故障根因。
+AVDD71 IO=3仅证明GPIO电平，不证明IOVDD1.8V。下一步需要XNU中实际LDO2状态或
+独立的SPI角色证据；不重复相同镜像、不把GPIO电平当供电测量。
+
+
+## 11. 2026-11-13：SM8475引脚表纠正旧排列推断
+
+[SM8475/SM8475P Data Sheet80-27620-1 Rev.AJ](https://www.scribd.com/document/995754119/80-27620-1-AJ-SM8475-SM8475P-Data-Sheet)
+Table2-4 printed p44直接列出QUP[4]：GPIO16=L0/MISO，17=L1/MOSI，18=L2/SCLK，
+19=L3/CS0；pin定义C30/E29/C31/D31分别对应这四个lane。
+这是Qualcomm文档的第三方镜像，不是已认证官方下载；不依赖通用QRB5165文档
+互相矛盾的MISO/MOSI表。[Xiaomi mondrian-s-oss pinctrl-cape.h](https://github.com/MiCode/Xiaomi_Kernel_OpenSource/blob/mondrian-s-oss/drivers/pinctrl/qcom/pinctrl-cape.h#L1641-L1648)
+独立确认16–19的qup4 function slot1与正确寄存器布局。
+
+旧元组17/18/16/19错误；00或ff只表示某次采样电平，不证明MISO或成功事务。
+修改ADT元组为16/17/18/19，只重建payload并沿用`boot-touch-reset`的同一内核。
+不改电源/频率/时序，不扫描排列；AA读回和checksum有效ID是下一轮判据。
+
+
+Pin-trial image `boot-touch-pins-20261113.img` sha256
+`ddfc759b3fd3d92fdeb7b544b82929f39239440730ab04ae702bfd7f05e9ff91`；
+payload kernel仍`d48f594b`、编译kernel仍`6d72dc8b`，没有重编内核或改boot参数。
+源码`1010e8b3939a14201e4bc01424861b0cee6e4245`，仅ADT触摸角色值改为16/17/18/19。
+
+
+`console-20261113-200959.log`（152483B）确认16/17/18/19已实际运行，仍AA读回00
+三次，未到chip ID。与前轮同一内核，说明单纯元组修正未闭合故障。
+不能继续把GPIO电平推断为rail或总线应答。转向实际Android `goodix_core.ko`
+`brl_power_on/brl_select_spi_mode`与固件PMIC接口，逐项核对9916R实际启动协议。
+
+
+## 12. 2026-11-13：以实际Android模块纠正Berlin族启动协议
+
+`goodix_core.ko`实际ELF反汇编：`goodix_get_ic_type`0x18fa4读compatible，
+0x190b0/0x190c4分别检测`9916`/`spi`并到0x19284返回6。字符串重定位
+`.rodata+0x66bb=9916`、`+0xc49d=spi`；真实`xiaomi,m11a-spi`因此走6/BerlinD。
+`goodix_spi_probe`0x174c只为numeric4选择9-byte读；6走8-byte普通读，当前帧头正确。
+Goodix公开枚举A=4/B=5/D=6：[pinned header](https://github.com/goodix/goodix_ts_berlin/blob/58cc7874cb5e13490a6c8720b308fa56847a1f51/goodix_ts_core.h#L65-L73)。
+
+实际`brl_power_on`0x111d4非4直接跳到0x11660等待100ms，初次上电没有8×AA。
+0xc900与0xd807/0xd806/0xd006/0xd808是BerlinA-only，不能用于9916R。
+删除未匹配本机模块的AA强制门禁，释放RESET后100ms读28字节firmware和有界
+IC-info；全0/ff、checksum错误和描述ABI错误仍拒绝。恢复reset仍2ms/100ms。
+这是协议匹配，不是把dummy数据当成功，也不增加fallback。实际应答仍待上机。
+
+
+Host实际`bring_up`控制流检查通过：transport初始化时RESET保持低，release后
+100ms读真实identity；identity失败传播，无合成成功。kernel/payload构建成功；
+`boot-touch-berlind-20261113.img` sha256
+`f5aa2f8ff0fd59c387f4f2c2aa9b4b5c0f88d7e8c47586d418c696af151f8835`，
+源码`bae9df2ed044ad85db71b19d802bd67c2057464f`，编译kernel`3d47ba01`，
+payload kernel`d80ab402`，UEFI/DTB保持原样。实际应答仍以上机日志为准。
+
+
+实际`console-20261113-203646.log`：GPIO16/17/18/19配置执行，RESET/AVDD路径
+执行，普通8-byte读在100ms后到firmware0x10014；仍只有总线默认字节，
+checksum-valid身份未出现，没有/dev/pong-touch。AA门禁已移除但不是全部根因。
+UI继续启动且实际GPU scanout完成sequence1/2/3，不能据此声称触摸成功或帧率合格。
+下一步只取实际GPIO/SPI/电源状态证据，不套用BerlinA或猜PMIC寄存器。
+
+
+## 13. GPIO-only阶段7：已知输出pad状态取证
+
+实际模块`spi_setup`前mode字段写0（0x1710），bits_per_word=8（0x1714）；
+普通read在0x1da8–0x1dd8发F1/地址4/FF3。当前frame/mode无已证明差异。
+stage7在RESET低时仅对已知CS19做101、SCLK18/MOSI17做010，恢复idle，
+记录CTL及IO的out-latch(bit1)/sampled-pad(bit0)。不驱动MISO16/IRQ21。
+原100ms启动等待不变，记录RESETrelease即时/100ms后状态和实际firmware字节。
+不是芯片ACK、供电或continuity判据；该阶段不访问GCC/SE/RSC/PMIC，不发布input。
+
+Android当前debugfs在`/dev/un_qslpi/traku_tu`，不是`/sys/kernel/debug`；
+按name确认当前regulator.28=pm8350c_l2（旧27现在是l1），enabled/1800000uV，
+regulator_summary consumer为spi0.0-vdd。cached cmd-db ldoc2=0x42c00 aux[01 2a 00 00]
+只说明VRM资源42，不是SPMI peripheral base。固件/XNU状态仍未实测。
+
+
+Host bounded-pad控制流检查通过：只写19/18/17，RESET保持低，CS在CLK/MOSI
+检查时保持高，最后恢复CS高/CLK低/MOSI低。内核构建成功`f8683700`，
+payload kernel`8a9c9f88`；实际FAT参数只有`k60_touch_se=7`，无残留6。
+`boot-touch-padprobe-20261114.img` sha256
+`5622eb59cc1eebfa82f570c89372648b8e262c06d7511250d2ddc235c2d754fc`，
+源码`3cf75ef30dba317baa637291ed692b742a258603`，UEFI/DTB未改。
+
+TOML evidence中历史JSON冒号已修为inline-TOML等号，文件解析通过。
+`scripts/check-porting-paths.py --quiet`仍报5012未认领路径（包括XNU源码/headers），
+不是触摸协议结果；没有为掩盖检查而增添宽泛路径认领。
+
+
+实际`console-20261114-021326.log`205330B（源码3cf75ef，image5622eb59）：
+CS19 IO=3/0/3，SCLK18/MOSI17 IO=0/3/0，证明这些pad的sampled输入跟随
+已知输出latch；RESET20 release与100ms后IO=3。IRQ1/MISO0。
+28-byte firmware实际全00；没有chip ID、IC-info、devfs或HID。用户确认仍无触摸。
+这排除了本轮GPIOpad不翻转/RESET未释放；不证明板级continuity或IOVDD保留。
+capture在310.85s读错误后回fastboot，后续ADB已恢复Android。
+
+
+## 14. 只读SID2:C200 observer：测XNU中的真实数字状态
+
+Android当前单外设读：C200header00030101048700、statusC208=87，C240/41和
+C242/43均0807（1800mV），mode07、enable80。这是实际LDO，不是空总线；
+raw APPS RW地址映射返回EPERM，不说明RPMh投票权限或具体owner。
+QTI源码`qti-regmap-debugfs.c`507–511确认address/count只改debugmetadata，
+只有写data才调用regmap_write；本轮没有data写且恢复metadata。
+
+actualAOP sha`b3c2fc3e8255a9ceb673c8af0ff96b45dcf93e24d4b9906e8546c4b26aecf69f`、
+config sha`0a3fbde21eb78060fdb2caf462ee88e4b63aed67d6ec67fde20cc5ee64c0f950`。
+config CRC目录LDO_NUM(e7b5f30e)的PMICslot2 count13；LDO_RSRC(0990fd58)
+slot2包含NULL,ldoc1,ldoc2…ldoc13。实际AOP80822010按firstbase/stride100索引；
+资源consumer8081ccb2–ccb6确实用index+1取name。C200对应ldoc2仍标为推断，
+不把Android读header等同于AOP启动时检测接受，也不推断UEFI/XNU电源保留。
+
+复用physical-keys patch的observer，lazy初始化独立于按键线程，mutex串行化。
+新增内部pong_spmi_find/read，按键迁移同backend；success外不输出data，保留
+raw arbiter status和ENXIO/EINVAL/ETIMEDOUT/EACCES/EIO。observer只写读命令，
+不写任何PMIC配置寄存器。stage7读取PPID2c2的header并核对type4/sub87后，
+才读ready8/control40八字节；日志区分arbiterstatus和PMICstatus、数字电压和物理电压。
+
+
+observer镜像已构建：编译kernel`e0efc97b`，payload kernel`df0c6d07`；
+`boot-touch-supplyread-20261114.img` sha256
+`da864ab948d6a2897b8bcc11d24cb6f29af3f6e0f0719c87271c2335d18a9f88`，
+源码`ec82bc9f8ca5a5c1b24848c6d640bb2eeaef18dc`。UEFI/DTB保持原样，参数stage7。
+身份/ready/control三次observer读以真实成功status为门，失败不输出合成供电值。
+
+
+实际`console-20261114-032407.log`190597B：observer身份/ready/control均
+err0 arb1，APID181。XNU中C200ready=0、enable=0，programmed1800mV但valid0、
+mode7、status3；Android同外设ready1/enable1/valid1800。这是数字外设供电状态
+未保留的实际证据，不再仅依据SPI00推测；电压ADC/板级continuity仍未测。
+SPI仍28字节全00，用户确认无触摸。实体power键有真实down/up，up/down键
+peripheral资格通过；本轮不能把driver45fps称为可见显示合格。
+
+
+用户要求后续boot必须自动复位、明早检查成果：board默认k60_autoreset=300，
+使用现有0334b独立内核线程和fastboot restart priming；不新增watchdog，
+仍只fastboot boot。正常输入配置仍stage6，stage7是明确不发布input的取证路径。
+
+
+## 15. 修复实测丢失的IOVDD：共享RPMh owner
+
+当前编译provider确为device-ui/drivers/PongAdreno/PongAdrenoPlatform.cpp；
+其run412–427实际direct RSC17a20000，GPU22阶段已实测成功；top securehelper
+是死代码残留。触摸不得自行map旧17a00000或用被拒绝的SPMI RW。
+使用同一TCS3 owner串行化GPU/触摸，保留现有idle/conflict/freshcompletion判据。
+ldoc2 cmdDB VRM地址42c00、aux012a0000；两条owner请求：voltage1800mV、
+enable1@42c04，不是PMIC EN_CTL80。mode/headroom/其它rail不改，保留已存在
+1800..1980更高vote，失败不重用未确认inflight事务。ACK后observer实测
+type4/sub87、ready/enable/valid1800..1980再释放RESET，最后验证chip/IC-info和HID。
+
+actualAOPconfigCRC LDO_RAIL=2fbb5c4d→PMICslot2ptr8088031c（file3d0），
+消费者8081d56c/570按36bytes/rail取Accessbit0；ldoc2零索引1=file3f4
+recordword0=6101（Access1），min/max1800/1980，+1c owner mask4。
+消费者8081d6a0/6a4将mask交0b00351c逐bit映射，不以SPMI写owner推断RPMh权限。
+这是从本机AOP/config解出的目标值，不套旧PMICbase或他机mask。
+
+
+已实现独立于GPU启动的pong_touch_iovdd_enable：shared mutex保护RSC/DB映射和
+整个TCS3事务。匹配VRM0100/42c00/aux012a0000才发两条带响应的1800mV/enable1；
+mode不变，未知retained值/occupied/conflict拒绝，未确认事务保持quarantine。
+Goodix在RESET低时请求供电；ACK后核对observer ready/enable/valid再释放RESET。
+不是保留电源假设，也不绕过chip checksum/config/HID资格门。
+target mask翻译表0b0e0ed0实际为0,1,2…，owner mask4因此允许DRV2。
+
+自动复位试验console-20261114-034402.log147952B：absolute300/idle0、fastboot
+primed和armed均出现，317.65s USB断开，capture末态fastboot。expiry行未抓到，
+因此定时原因由配置/时间及末态支持，不把USB断开单独当复位证明。
+
+
+首轮power修复构建失败：archive fakeroot PrivateHeaders的lock_group/lock_mtx
+省略LCK_*_DECLARE。static mutex移到kernel C Goodix TU，由内核startup初始化；
+C++调用C lock/unlock wrapper，仍同一owner锁，无per-read/per-vote分配。
+throwaway VRM控制流检查通过：two-command ACK、busy/未知值拒绝、timeout
+quarantine、retained更高电压不降低。硬件效果仍待新镜像。
+
+
+kernel/payload构建成功：compiled323b97f2、payload34122d3e；
+`boot-touch-iovdd-20261114.img` sha256
+`42169c41ddff31df09eb509f4dd76a0228a44e75c8ecd97c92540d37439f7035`，
+源码`e72c735ba84b4cdc357209c2b5932542207f9aa9`。UEFI/DTB不变。
+参数stage6/gprobe1/autoreset300，606byte，未超607字符限制。目标parser
+throwaway检查通过exactidentity/aux/duplicate/overlap/slave边界；VRM事务检查
+通过realACK、busy拒绝、未知电压拒绝、timeoutquarantine和retained电压不降低。
+
+
+实际`console-20261114-042106.log`160230B：targetVRM两条请求ACK，C200读
+err0/arb1，ready1/enable1/programmed1800/valid1800/mode7/status87。继而
+chip BERLIN/9916R firmware05800263、IC-info193bytes/misc49/touch10308/
+command10174/head8/point8校验通过；CFG-START/DL1488bad0/WRITE/EXIT/
+COORD-MODE均ACK80。stage6真实驱动ready并发布设备，不再停SPI默认全00。
+没有手指事件/HID消费证据，不能将底层成功升级为触摸交互资格。
+
+同轮硬件INTF1 framecount2027→2067（39428ms）、2067→2128（60012ms），
+约1Hz；autorefresh8000003c、sync180064。其它INTF无帧。这与用户约1fps一致，
+接下来查目标DPU framecount字段，不再用GPU处理fps证明panel刷新。
+
+
+实体键已有当前kernel peripheral资格和power真实down/up。修正polling failure
+计数位置到PON与GPIO两次读之后，避免PON成功掩盖volume-up连续失败；
+连续8轮失败仍按原规则释放所有held keys并停止，不伪造输入。
+网络/蓝牙/音频/电量无可安全打开的额外switch；battery代码已编译但实际
+PAS1/exclusiveGLINK handoff缺失阻止publication，保持真实资格门不补假电量。
+
+
+## 16. HID消费者依赖与实际日志
+
+旧113472B UI blob确实含touch.c且BackBoardconstructor调用pong_touch_start，
+但没有IOKit依赖，使用RTLD_DEFAULT解析HID；失败仅写stderr，因此console无HID
+行不能证明未调用。显式dlopen真实IOKit并从handle解析，保持handle供workers使用。
+真实20G81cache image table确认IOKit owner；实际导出/API资格仍由下轮runtime验证。
+say使用现有kern.pong_diagnostic，失败才stderr；打印真实initializer/devfs open/
+digitizer register/readloop/dispatch错误与结果，不生成假手指或键事件。
+使用userland/build.py ui现有编译+embed流程刷新0340，供下一轮内核部署。
+
+
+HID+panel修复已构建：UI113552B sha16d47ae4，embed与0340逐字节一致；
+`boot-hid-panel-20261114.img` sha256
+`93cbaf977bb3f649062eb6a151f114c1836573ce2a6eb7e3198e5f30473519be`，
+compiled23a82043、payload ec42aa8d、源码ef2389b608ecf85aafb33e56cfb1192d3a2ec8f7。
+正常stage6、gprobe1、autoreset300，UEFI/DTB不变；实际HID打开/面板counter效果待capture。
+
+
+实际`console-20261114-050030.log`：IOKit APIs全解析成功；BackBoard打开
+pong-touch fd4、pong-buttons fd3，display-integrated digitizer、tapwakeconsumer
+创建成功并开始读真实sample。没有不可用API/读取失败；没有实际手指sample，
+故明早触摸响应/手势/多点释放仍须物理验收。面板counter实测恢复约60.6Hz。
+
+
+正常交付候选 `E:\k60-ios\boot-k60-morning-20261114.img`，SHA256
+`1581207723290c47365f28852cd5eacb22235001348e2e41bacd0f2624640237`。
+实际`console-20261114-051254.log`148888B：gprobe0、stage6、autoreset300；
+目标供电/chip/config及真实HID设备/digitizer/tapwake/readloop再次通过。
+INTF1count改1/readback保持，后续3627frames/59984ms（约60.5Hz）。
+capture317.72s结束并回fastboot，最终fastboot设备查询确认be74ba07。
+已停止自动boot，保留fastboot；真实手指/多点/释放/边缘手势待用户明早物理验收。
+
+
+## 17. 用户物理验收：帧率恢复、触摸仍无响应
+
+用户确认正常候选可见帧率正确，但手指触摸没有响应。
+`console-20261114-105004.log` 1561787B：同轮实际电源/音量0/1/2
+down/up由内核识别，HID sent=1；真实touch设备/digitizer/readloop打开。
+未见goodix触点、HID样本、坏report或停止polling日志，不能称触摸已工作。
+Linux v6.12 `goodix_berlin_core.c:148-162`定义8字节header；当前poll
+在status=0时静默返回，IRQ为高也每80ms实际读取，因此缺少采集层观测。
+先在现有poll中加最多40条、每128次/状态变化采样的真实IRQ/reset/AVDD及
+ACK前8字节header/checksum；打印IC-info实际configID/version/fwstate/buffer。
+不改变显示、电源、report解析和真实输入派发；不生成假触点。
+继续对照实际Android Goodix配置发送/固件扫描协议，取证后移除此临时诊断。
+
+
+实际 `console-20261114-121220.log` 150623B（内核 `0cd7159f`）记录
+27 个 ACK 前采样：`poll=0..2944`、IRQ=1、RESET=1、AVDD GPIO=1，
+header 恒为 `00 a9 6d 7b 82 93 28 6b`，checksum 不通过。
+用户持续点击滑动，但没有有效触点。身份及配置缓冲区的校验/readback通过，
+不能据此证明每次 report 读取有效、模拟供电合格或感知已工作。
+配置 ID `640fdf7d` / version `0x46`（十进制70）与 Android 记录一致。
+
+`016b384` 曾尝试配置完成状态门控并移除 EXIT 后复位；实际代码仍在
+`ack[1]==80` 时提前返回，即使 `state[0]!=80`，门控没有真正修复。
+厂商 `goodix_brl_hw.c:352-539` 明确区分命令接受（ack[1]）与
+START/WRITE/EXIT 配置完成（state[0]），不能混为一个条件。
+镜像`boot-touch-cfgfix-20261114.img`sha256
+`366e797e749635856fda9295b5996fb98bb5852eeef68de4a4d295262668d7c0`，
+UEFI/DTB/参数不变；该轮未修复触摸，见下方实测。
+
+
+实际 `console-20261114-122002.log` 203804B（内核 `45069054`）仍无触点，
+header 恒 `00 ab 6d 7b 82 93 28 6b`。`fw_buffer` 首字被改写只是缓冲区
+内容变化，不能证明配置应用成功；两次启动的 header 不同也不能证明运行中
+扫描或报告区持续更新。此前相关结论撤回。
+
+`console-20261114-124218.log` 204079B（内核 `627d987a`，源码 `e218787`）：
+27 个样本中 header 只有1种，fw_state首字节有26种值，4路 diff 有27种值。
+采样没有全矩阵、无按下/未按下的配对基线，不能区分手指感知与噪声。
+真实按键仍有 HID sent=1，触摸仍未出现真实 down/move/up。
+用户带走设备期间只做离线分析、修复和构建，不启动任何上机任务。
+
+
+## 18. 离线修复配置完成边界
+
+- 对照厂商固定提交 `58cc7874` 的 `goodix_brl_hw.c:352-539`：命令 ACK 与配置完成分别检查，START/WRITE/EXIT 均需 state80；命令结构16字节。
+- 修复旧 `ack80` 提前返回：普通命令仅确认 ACK，配置命令随后独立等待 state80（最多20次、每次20ms）；失败不得发布输入设备。
+- 使用16字节命令/回包；配置写入之前核对 IC-info 的 fw_buffer_capacity；WRITE 失败仍执行 EXIT 结束事务。不根据 fw_buffer 的暂存内容宣称配置生效。
+- 回归场景已在主机运行：ACK80但state00超时失败、延迟state80完成、普通坐标命令不要求配置state、回包读失败、checksum ACK04拒绝。
+- fw_state/diff 取证打印各自真实读取结果，只在读成功时输出数据。维持原校验、真实HID派发、显示修复和300秒回fastboot；无合成触点。
+- `0x90/00` 在公开 Berlin-D 源码是 raw/diff debug 模式退出，不足以证明 Xiaomi 坐标上报已启用。实际 Android 模块含 `goodix_htc_enable` / `goodix_htc_enable_touch_coord`，继续核对实际实现；不猜测另一个启动命令。
+
+
+完成状态候选已离线构建：源码 `58f2b3e91fe14dfe7383b857be3820c1fbdbf1ba`；
+编译内核 `38d176c2f1495b99983003b6833afa2532a5bfc5f1753e3ea433a350b4cf35a4`；
+FAT中实提payload内核 `2d7d0b57fdaa3769af3fb312921026d4f09ce2a8a12545cbe68fff4a6f2911fc`。
+镜像 `E:\k60-ios\boot-touch-complete-20261114.img` SHA256
+`30edafba1a4e7e05d39d5c0c2792f4542dcfc2253210ca8ac97566fded7ffa5f`。
+boot header/firmware/DTB/signature与正常候选逐字节相同；只换payload，
+保留 `k60_touch_se=6 gprobe=0 k60_autoreset=300`。未上机，手机离线。
+
+## 19. 本机 Android 模块确认缺失的坐标使能
+
+实际 `goodix_core.ko` SHA256 `381b1969f45a65b5922387091b6a8e8bacd452ab5b135eab3824b079c6e6b977`。
+`goodix_htc_enable` `.text+0x10370` 的坐标专用关闭raw分支：
+- `103f0..1044c` 发送 len5 / cmd90 / data00，清除raw模式；
+- `104e8` 设置 cmd91；`104f0` 对调用参数为false的分支读取模式；
+- 模式0：`104fc` 设置 data01；非0：`10590` 设置 data81；`10598..105b8` 发送 len5 命令。
+- `.rodata+0x669` 是 `goodix_htc_enable_touch_coord`，`+0x8796` 日志为 `success send touch data cmd`。对应指令与重定位已保存到 `work/deploy-repair/actual-goodix-htc-enable.txt`。
+
+XNU 的 8字节header/8字节point 消费者使用坐标专用路径，不使用 THP raw/combined模式。
+因此完整切换为 `90/00 → 91/01`，两次真实 ACK 都通过才发布输入；reset request后重新执行该模式切换。
+此前仅 `90/00` 退出raw模式但没有执行坐标使能，是直接的协议缺项。`91/81` 属于非0的主机模式分支，未验证其报告ABI，因此不选用。mode0是本机模块实现的选择，不宣称已观测Android默认模式值；是否恢复手指响应须下次实机验证。
+回归覆盖第二条命令拒绝时整个坐标模式失败，避免只确认 raw-off 就宣布输入ready。
+
+最终测试候选已构建：`E:\k60-ios\boot-touch-coordinate-20261114.img`，SHA256
+`1a9ba8fa77a4500315845278a7b30d5800f3bf991bce975f390f439cce12271b`，201883648B。
+源码 `184d9989a97750916601eddc07e4ed250b0762a7`；编译内核
+`828324c351a7514ed9b8c10c49d6e022a1f06b30e96ff6eb1c3b4b4b3fe47e7b`；
+payload内核 `a827414f58291730c0743acac4c3070cb975d31200231ea6f170225da709d85a`。
+主机回归覆盖第二条坐标命令拒绝；实际内核/payload构建成功。
+最终FAT内提取内核核对SHA，boot header/firmware/DTB/signature与正常候选逐字节相同。
+不改已合格的显示/按键/IOVDD路径，保留stage6/gprobe0/autoreset300，未上机、无刷写。
+下次日志应分别看到 `CFG-START/WRITE/EXIT completed state=80`、`RAW-OFF ack=80`、
+`COORD-ON ack=80`，以及真实 `goodix: type=` 和 `Pong touch HID: dispatched`。
+命令ACK仍不等于手指交互成功；须用户单指点击/滑动/释放与双指交叉的可见响应验收。
+
+## 20. 坐标使能后实测触摸打通
+
+`console-20261114-135839.log`（7722819B，镜像 `boot-touch-coordinate-20261114.img`，
+源码 `184d9989a97750916601eddc07e4ed250b0762a7`）：
+
+- `goodix: CFG-START completed state=80 ack=80`；WRITE/EXIT 同样完成；
+- `RAW-OFF ack=80`、`COORD-ON ack=80`（实际 K60 `goodix_htc_enable(false)` 的 `90/00 → 91/01`）；
+- 首个有效上报 `header=80 1b 01 00 00 00 9c 00 checksum=1`，随后
+  `goodix: type=1 finger=0 raw=2863,13781`；
+- 内核共 8 个触点（5 down / 3 move），BackBoard `Pong touch HID: dispatched type=1/2/3`，
+  手指编号 0/1/2 均出现；用户持续点击滑动。
+
+这证明缺失的 `91/01` 坐标使能就是无触摸的根因；命令 ACK、供电和 HID 桥本身没有问题。
+遗留 2 次 header、6 次 contact 校验失败：旧版在每次上报前插入 fw_state/diff 读取，
+会延迟状态清除；该诊断已在 `2a7b200` 移除，生产镜像
+`boot-touch-prod-20261114.img`（sha `d1ee295c…`，内核 `99b634c3`）待实机确认失败率。
+多点同时触点、边缘手势与持续帧率仍属未验收项。

@@ -30,7 +30,7 @@ qupv3_se4_spi_pins {
 
 **结论：SPI 引脚集合是 GPIO 16,17,18,19，功能 `qup4`（= QUP0 SE4）。**
 我们的 `pins[0..3] = 16,17,18,19` **正确**。
-**未确认**：这 4 个引脚中哪个是 MISO / MOSI / CLK / CS。
+后续SM8475目标Table2-4已确认16=MISO、17=MOSI、18=SCLK、19=CS；见GOODIX-TOUCH-PORT.md §11。本文保留早期FDT观察，不作为当前实现差异清单。
 
 ## 2. `spi@990000` 节点
 
@@ -101,6 +101,6 @@ xiaomi_touch@0 {
 
 ## 5. 下一步
 
-1. **确定 4 个引脚的角色**：24 种排列一次上机扫描（已实现 `K60_PIN_PERMUTE_BLOCK`）
-2. 若排列都读 0 → 加 **RESET 脉冲**（拉低 10 ms → 拉高 100 ms）
-3. 若仍不通 → 需要 **GPIO 71 (AVDD)** 上电 + **pm8350c_l2**
+当前路径见`docs/plans/GOODIX-TOUCH-PORT.md` §11–12及`porting.toml` input：
+按目标表固定SPI角色，使用实际numeric6/Berlin-D RESET/100ms/8-byte读协议。
+禁止排列扫描；AVDD71已实现，XNU IOVDD保留尚未实测，默认00/ff不能判断供电。

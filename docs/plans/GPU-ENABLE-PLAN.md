@@ -739,3 +739,117 @@ scanout worker 仍只在 backboardd 创建。没有测试绘制或新的刷新�
 不绕过 UUID、初始化、可写性或取值检查。下一轮用这些数据定因，不把优化驱动耗时
 当成解决可见帧率问题。
 
+
+`gprobe=1` 在真实 scanout worker 启用前 120 秒的有界 RGB 采样：16×16
+网格、32 位对齐读取、忽略 framebuffer 的保留 alpha 字节；只读、无合成测试画面。
+每 5 秒汇总源/目标变化帧数、不匹配帧数、拷贝前后源变化和实际拷贝耗时，采样在
+真实完成之后、送出 completion 之前执行，保持映射仍有效。256 点不覆盖所有像素，
+不能证明整帧正确或物理 panel latch；用于区分上游内容、拷贝边界和面板消费问题。
+
+
+Host 验证：实际 `sampleRgb` 函数编译执行，带 padding 行、alpha-only 不变化、
+RGB 变化和越界拒绝通过。插件以真实 iPhoneOS SDK 重链接（NOUNDEFS），kernel/payload
+构建成功；boot args 实际 604 B。`gpuI` 镜像 sha256
+`85822ece66a3d5cdab138ff67ffcfd263a8d70088f397cbb2b9342d3136ba535`，
+payload kernel `5bc29dbc`，编译内核 `4df14bb1`，保留 gpuH 的 UEFI/kernel slot。
+
+
+### 7.10 压缩策略 -6：错误读取 dispatch_once 内部完成值
+
+`gpuI` 日志 `console-20261113-174827.log`（229833 B）显示：backboardd ASTC once
+读取成功、8 B、值 `0xadc6`；SpringBoard universal once 值 `0x12b4e`。
+两值低两位均为 2，符合 Apple ARM 的 quiescent-generation 完成态。
+[Apple libdispatch-1415.140.2 once.c](https://github.com/apple-oss-distributions/libdispatch/blob/libdispatch-1415.140.2/src/once.c#L43-L70)
+和 [shims/lock.h](https://github.com/apple-oss-distributions/libdispatch/blob/libdispatch-1415.140.2/src/shims/lock.h#L629-L646)
+明确允许初始化完成后暂存 generation，而非立即变成 `~0`。此前强制全 1 检查错误。
+修复删除内部 predicate 读取和判断，依赖 `dispatch_once_f` 返回的同步保证；保留
+UUID、block invoke、原初始化器、bool 取值范围和可写性检查。没有伪造 once 完成值。
+
+RGB 探针：23 个窗口、4326 次已完成 GPU 拷贝，大多数窗口源/目标变化数相同；
+有 7 次采样不匹配，拷贝期间源变化频繁。后段每 5 秒约 21–110 次 RGB 网格变化，
+不能简化成 GPU 每秒只提交一次，也不能由256点证明整幅画面和物理 latch 正确。
+backboardd 120秒表：7151 次完成，平均13587us；SpringBoard 未产生 Metal commands。
+这些证据不支持把 shader 编译或拷贝成本直接断言为约1fps主因。
+
+
+修复 Host 行为检查：完整 policy 函数在内存/dispatch 合同夹具执行，五个 initializer
+按同步 API 完成、flag 被置零、重复调用不再初始化；无效 bool、读取失败、不可写
+和 block invoke 错误均保留拒绝。夹具不替代实际20G81初始化器执行。
+插件重链接、kernel/payload 构建成功；`gpuJ` image sha256
+`6f343d49455448ebe92206be96f013c77eae0f28fa06aca1657488a5ed667d5e`，
+编译 kernel `7a077e12`，payload kernel `3a113d6a`，等待实际策略成功和交互证据。
+
+
+`gpuJ` 真机日志 `console-20261113-181705.log`（199937 B）：backboardd 与 SpringBoard
+均输出 policy active status0，cached flags changed=0。五个策略 flag 本来已关闭，
+所以此次修复消除了假失败，但没有切换渲染路径，不能作为可见帧率根因。
+RGB 4435 次采样：源变化1356、目标1350、9次不匹配、1522次拷贝期源变化；
+后段 51 个显示事务/s、拷贝约14.5ms，仍不代表面板新画面/s。保留这些证据，
+下一步只读 DPU/DSI 真实帧/TE/触发状态，不凭软件节拍改面板档位。
+
+
+拷贝期源变化不能单独证明 producer race：`NativeAdrenoSubmit::synchronizeCompleted`
+会经 `NativeAdrenoVm::acquireImported` clean/invalidate 导入页，拷贝前 CPU 采样可能
+看到旧缓存、完成后才看到此前 GPU 写入。Pong runtime 的 storage dependency 识别
+相同/重叠虚拟地址，不比较物理页或 IOSurfaceID；只在已提交、同进程且有范围重叠的
+producer 证据成立时才考虑选择性等待。NativeMetal 的 `NBWaitInFlight` 因
+`earlyOn()==false` 实际不等待，不能当已验证先例。当前不添加全局等待。
+
+
+### 7.11 只读面板计数：先验证寄存器访问时钟
+
+K60 FDT `work/refs/mondrian-mainline.dts:20109-20112`：INTF偏移
+0x35000/0x36000/0x37000/0x38000（MDSS相对，不额外加0x1000）。
+[zizhan 同SM8475的 dpuBus](https://github.com/qiumochen/UniXNU-zizhan/blob/main/drivers/PongAdreno/PongAdrenoScanout.cpp#L160-L195)
+记录扫描期间直接读MDSS曾挂死，因此先读 GCC_DISP_AHB CBCR0x137004，再读
+DISPCC0xaf080a4的MDSS AHB和0xaf09000的GDSC。时钟bit31必须为0，电源bit31为1，
+否则只记录skip，不读MDSS，不自动开启时钟。
+[intfProbe/intfRate](https://github.com/qiumochen/UniXNU-zizhan/blob/main/drivers/PongAdreno/PongAdrenoScanout.cpp#L644-L675)
+及Linux INTF寄存器定义提供frame0xac、DSI INTF1/2 TE0x298高16位、autorefresh0x2b4。
+`gprobe=1`完成GPU拷贝后最多120秒、每5秒读计数，独立映射4KiB页；不写DPU/DSI，
+不改面板频率。frame/TE delta按32/16位模减法记录，首样本只给raw。
+
+
+Host 控制流检查：GCC关闭、DISPCC关闭、GDSC关闭均不读MDSS，正常计数delta和
+120秒停止通过（仅MMIO夹具，不替代上机）。kernel/payload构建成功，`gpuK` sha256
+`dbfa2129bfd1f4161d217748fda40d65d5f1b148e35223718af136de788aa1f4`，
+编译kernel `34e11c77`，payload kernel `f2222512`，插件沿用已验证gpuJ。
+
+
+`gpuK`上机等待120秒返回 `TIMEOUT-NO-FASTBOOT`；随后的fastboot/adb及Windows
+PresentOnly设备检查均无匹配设备。未发送boot镜像、没有gpuK真机日志或MDSS读数。
+需要设备回到fastboot并恢复USB连接，随后只用 `fastboot boot` 继续此探针。
+
+### 7.12 实测INTF1约1Hz：纠正继承的autorefresh分频
+
+`console-20261114-042106.log`：INTF1 frame2027→2067/39428ms、2067→2128/
+60012ms，autorefresh8000003c、sync180064。其它INTF未运行；GPUcopy正常。
+[Qualcomm-authored SM8475镜像](https://github.com/crdroidandroid/android_kernel_xiaomi_sm8475-modules/blob/98f72d675c093d88eab7bbe1162da725c580a428/qcom/opensource/display-drivers/msm/sde/sde_hw_intf.c#L675-L711)
+明确INTF-relative2b4 bit31enable/low16frame_count，硬件setter直接写count；
+[connector注释](https://github.com/crdroidandroid/android_kernel_xiaomi_sm8475-modules/blob/98f72d675c093d88eab7bbe1162da725c580a428/qcom/opensource/display-drivers/msm/sde/sde_connector.c#L36-L37)
+明确每FRAME_CNT帧刷新。该来源不是已确认匹配K60 stock release，目标值则来自本机读数。
+count60与约1Hz一致；不是提高GPU处理fps或宣称面板120Hz。
+
+只在已有时钟/电源guard通过、DSIcommand2.x运行、INTF1计数真实前进、sync180064、
+auto精确8000003c时，执行一次low16=1，保留bit31及其它bit；write barrier后记录
+readback及后续真实hardware frame delta/ms。正常boot可修复，不依赖gprobe开关；
+未知状态不改，不关TE/不改频率/不抢其它INTF。整个取证窗口最多120s。
+
+
+Host scoped控制流检查通过：无计数前进、clock关闭、sync未知、autorefresh未知
+均不写；只精确继承值8000003c一次改count1，后续hardwaredelta验证后停止。
+该throwaway检查不等于显示硬件效果，仍待下一轮真机计数/readback。
+
+
+
+实际`console-20261114-050030.log`150485B（image93cbaf97/sourceef2389b）：
+INTF1在37661ms前进38帧，约1.01Hz；单次count60→1 readback80000001。
+后续59983ms前进3635帧，约60.6Hz，readback保持。触摸power/chip/config
+资格和真实HID/device打开同时成功。实际glass动画未有人观察，不能声称120fps。
+
+
+正常gprobe0镜像`boot-k60-morning-20261114.img`（SHA15812077）也实测通过：
+`console-20261114-051254.log`：单次count60→1/readback80000001，后续
+3627frames/59984ms（约60.5Hz），证明修复不依赖诊断开关。真实触摸/键HID已打开。
+300秒自动复位后已留fastboot，停止boot循环；glass流畅度仍待用户物理观察。
+

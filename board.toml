@@ -181,10 +181,11 @@ kernel_args = [
   "xpcproxy_idversion=1",
   "k60_entitlement_allow=1", "k60_skip_iosurface=1", "k60_panic_reset=1",
   "k60_init_blob=1", "k60_launchd_cache=1",
-  "k60_autoreset=0",
-  # Touch stage 6 publishes /dev/pong-touch only after the chip answered the
-  # boot-option handshake and accepted the config package. The applog pair was
-  # dropped to stay inside the 608-byte arm64 boot-args limit; SpringBoard's own
+  # Unattended temporary boots return to fastboot after300s via0334b.
+  "k60_autoreset=300",
+  # Touch stage6 publishes only after checksummed firmware/IC-info and config.
+  # Startup matches actualBerlinD RESET/100ms; there is no8AA prerequisite.
+  # The applog pair was dropped to stay inside the608-byte arm64 argument limit;
   # os_log output is unaffected.
   "k60_touch_se=6",
   # Adreno stage B (docs/plans/GPU-ENABLE-PLAN.md 4.4). Stage A ran on the board
@@ -206,8 +207,9 @@ kernel_args = [
   # panel stays the kernel text console, which is the opposite of a handoff.
   # k60_fontscale left with pong_metal for the same reason - it only sized the
   # kernel's own text console, which no longer owns the panel - and it is what
-  # keeps this list inside the limit. 602 of 608 bytes.
-  "pong_adreno_start=1", "pong_gpu_scanout=1", "pong_metal=1",
+  # keeps this list inside the limit. GPU cadence probing is paused while
+  # qualifying Goodix input; rendering and CPU fallback policy are unchanged.
+  "pong_adreno_start=1", "pong_gpu_scanout=1", "pong_metal=1", "gprobe=0",
 ]
 # All eight CPUs. The AppleARMCPU device-tree validation that required a
 # single-CPU ADT is bypassed by the kext patch on _validateConfiguration, and the
@@ -299,10 +301,9 @@ max-y = 32000
 
 [adt.arm-io.pong-touch.bytes]
 pins = "100000001100000012000000130000001500000014000000"
-# MISO, MOSI, CLK, CS. The FDT only says these four pads belong to qup4, not
-# which role each has (P-70). A 24-permutation hardware scan found exactly two
-# tuples that read ff ff ff ff instead of 00 00 00 00, which proves MISO is
-# GPIO 17: PERM7 (17,16,19,18) and PERM8 (17,18,16,19). The driver additionally
-# requires bitbang_pins[3] == 19, so only this tuple is admissible. The chip's
-# own 8 x 0xAA boot-option write/read-back then confirms or refutes it.
-bitbang-pins = "11000000120000001000000013000000"
+# MISO, MOSI, SCLK, CS: SM8475/SM8475P data sheet80-27620-1 Rev.AJ,
+# Table2-4 printed p44 maps QUP[4] L0..L3 to GPIO16/17/18/19.
+# Xiaomi mondrian-s-oss pinctrl-cape.h confirms qup4 function slot1.
+# The old ff-versus-00 permutation experiment proved no SPI direction;
+# require checksummed9916R firmware and bounded IC-info; no GPIO default is an ACK.
+bitbang-pins = "10000000110000001200000013000000"

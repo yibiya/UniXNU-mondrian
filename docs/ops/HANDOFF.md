@@ -1,5 +1,22 @@
 # HANDOFF — 当前状态（滚动覆盖，只写「现在」）
 
+## 当前验收候选（2026-11-14，优先于下方历史记录）
+
+- 只用 RAM 临时启动，不刷写分区。正常候选：`E:\k60-ios\boot-k60-morning-20261114.img`。
+- 镜像 SHA256：`1581207723290c47365f28852cd5eacb22235001348e2e41bacd0f2624640237`。
+- 内核 `23a82043`，payload 内核 `ec42aa8d`，源码 `ef2389b608ecf85aafb33e56cfb1192d3a2ec8f7`。
+- 参数：`k60_touch_se=6 gprobe=0 k60_autoreset=300`。正常启动保留 300 秒回 fastboot。
+- 触摸供电故障已实测修复：目标 RPMh 请求 ACK，observer 确认 ready/enable/valid 1800mV；BERLIN/9916R 固件及 IC-info 校验、1488 字节配置及坐标模式 ACK 均通过。
+- `console-20261114-050030.log`：BackBoard 打开真实 touch/button 设备、显示集成 digitizer、tap-to-wake 服务，进入物理样本读取循环。
+- 同轮面板 INTF1 从约 1.01Hz 恢复到 3635 帧 / 59983ms（约 60.6Hz）；不宣称 120Hz 或未经观察的可见流畅度。
+- 用户已实机确认帧率恢复，但触摸仍无响应；电源/音量三键 down/up 有 HID sent=1。`console-20261114-124218.log` 27个 inactive header 恒0，fw_state/diff有变化，不足以证明手指感知或配置完成。触摸保持未验收；后续镜像修复独立 ACK/state 完成等待，离线构建后再测试，不生成假触点。
+- Wi-Fi、蓝牙、音频、电量没有新增资格；电量阻塞于真实 PAS1/exclusive GLINK handoff，未发布假电量。
+- 正常候选已实测：`console-20261114-051254.log`（148888B），`gprobe=0` 时仍打开真实 touch/button HID，完成 count60→1/readback；后续 3627 帧 / 59984ms（约 60.5Hz）。300秒定时已armed/fastboot primed，317.72s USB结束，capture及最终设备查询均为 `be74ba07 fastboot`，已留fastboot供明早验收。
+- 用户带走手机期间暂停全部上机操作；下一轮采用离线准备的新镜像。已撤回“fw_buffer改写证明配置被消费”等无依据结论，详见 Goodix 方案第17/18节。
+- **触摸已实测打通**（`console-20261114-135839.log`，7722819B，镜像 `boot-touch-coordinate-20261114.img` / sha `1a9ba8fa…`）：`CFG-START/WRITE/EXIT completed state=80`、`RAW-OFF ack=80`、`COORD-ON ack=80`；随后真实 `header=80 …` 校验通过，内核 `type=1/2` 触点，BackBoard `HID dispatched type=1/2/3`（手指0/1/2）。根因：旧代码只发 `90/00`，缺本机 Android 的 `91/01` 坐标使能；配置完成也没真正等 `state=80`。
+- 生产候选（已移除逐帧诊断）：`E:\k60-ios\boot-touch-prod-20261114.img`，SHA256 `d1ee295c6a9707e323f0615acaa93e9e31da09cfb04a1bf768028c6c6b116abe`，编译内核 `99b634c3`，源码 `2a7b200`。header/firmware/DTB/signature 与已合格正常镜像逐字节相同，保留 `k60_touch_se=6 gprobe=0 k60_autoreset=300`。**尚未上机**。
+- 遗留：本轮 2 次 header、6 次 contact 校验失败，疑似逐帧 fw_state/diff 诊断读取与清状态竞争；生产版已移除该读取，需实机确认失败数不再增长。多点同时触点、边缘手势与持续帧率仍待正式验收。
+
 ## 最新状态（2026-11-09 12:30，覆盖下面的旧记录）
 
 ### 一句话：**实体键全链路打通**（内核识别三键 + 用户态 HID 打开）；触摸驱动已运行但 DT 配置失败；系统正常起 SpringBoard

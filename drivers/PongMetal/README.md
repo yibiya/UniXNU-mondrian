@@ -3,8 +3,10 @@
 This is a local fork of Sheng's NativeMetal frontend and object bridge over
 metal2vulkan and Turnip. The compiled path now includes stock20G81 Metal
 discovery, a genuine IOAcceleratorES parent, native BO clients and GPU scanout.
-**Actual Pong GPU execution and accelerated presentation remain unconfirmed.**
-The most recent phone log stops before CP initialization completes.
+K60 hardware logs now confirm CP startup, native device discovery, real render
+commands and completed GPU scanout copies. Visible smoothness remains unqualified:
+the user reports about1fps despite much faster driver transactions. Current evidence
+and remaining boundaries are in `../../docs/plans/GPU-ENABLE-PLAN.md` sections7.8–7.10.
 
 ## Actual adaptations
 
@@ -55,9 +57,9 @@ stay unsupported. The reproducible source patch is
 
 ## Hardware integration and remaining confirmation
 
-Pong CP/GPU-VM/ZAP/native-client startup is now connected, with actual
-timestamp completion required before publication. Phone execution is still
-unconfirmed. `PongAdrenoAccelerator` uses the supplied20G81 base metaclass,
+K60 CP/GPU-VM/ZAP/native-client startup and real scanout copy completion are
+device-verified. The actual timestamp must complete before publication.
+`PongAdrenoAccelerator` uses the supplied20G81 base metaclass,
 constructor and destructor. It initializes only that empty original base;
 loading every IOGPUFamily dependency would duplicate the native IOSurface
 provider. The native GPU service and accelerator share one BO/VM/submission
@@ -67,6 +69,14 @@ SpringBoard, CollectionsPoster and WidgetRenderer_Default. The seed file is the 
 policy; there is no second compiled list rejecting wallpaper clients. BOs and surfaces are imported
 through the native ABI, and only completed GPU work retires displayed frames.
 Successful compilation or a staged bundle does not establish acceleration.
+
+Bounded per-client Metal timing tables are emitted at5/20/60/120 seconds.
+`gprobe=1` additionally samples256 aligned RGB locations in the source and
+completed framebuffer for120 seconds, without altering frames or fences.
+Neither completed transaction counts nor these sampled pixels prove physical
+panel latch cadence or full-frame correctness. The compression policy uses
+`dispatch_once_f` synchronization, not the predicate's private completion value.
+
 
 ## Rebuild, without image verification or device operations
 
