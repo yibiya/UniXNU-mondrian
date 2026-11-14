@@ -837,3 +837,16 @@ CFG-START/DL1488/WRITE/EXIT/COORD全部ACK80。结论：配置身份正确、
 `366e797e749635856fda9295b5996fb98bb5852eeef68de4a4d295262668d7c0`，
 UEFI/DTB/参数不变。等待上机验证。
 
+
+实际`console-20261114-122002.log`203804B（cfgfix镜像366e797e，内核
+45069054）：状态门控生效——CFG-START/WRITE/EXIT/COORD全部ack80且新增
+`CFG applied first word 6e 00 3b 00`证明EXIT后固件确实消费了配置
+（fw_buffer不再等于下载的4e 4d 00 00）。但持续点击滑动下header状态字节
+依然恒0x00（`physical poll=0..2944 ... header=00 ab 6d 7b ...`），
+仅第2字节在两轮间a9→ab变化，说明固件活着在写报告区、却从不锁存触摸
+事件。结论收窄：命令/配置/复位生命周期全部正确，故障在固件扫描或报告
+合成层。新增有界fw_state(0x10218,92B)与mutual_diffdata首8字节采样
+(commit e218787, 内核627d987a)，镜像`boot-touch-fwstate-20261114.img`
+sha`e2bff815...`：diff随手指变化→模拟感知正常只差报告合成；diff恒定→
+AFE/校准/模拟供电问题。等待上机判别。
+
