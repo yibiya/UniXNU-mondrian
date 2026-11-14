@@ -804,3 +804,17 @@ INTF1count改1/readback保持，后续3627frames/59984ms（约60.5Hz）。
 capture317.72s结束并回fastboot，最终fastboot设备查询确认be74ba07。
 已停止自动boot，保留fastboot；真实手指/多点/释放/边缘手势待用户明早物理验收。
 
+
+## 17. 用户物理验收：帧率恢复、触摸仍无响应
+
+用户确认正常候选可见帧率正确，但手指触摸没有响应。
+`console-20261114-105004.log` 1561787B：同轮实际电源/音量0/1/2
+down/up由内核识别，HID sent=1；真实touch设备/digitizer/readloop打开。
+未见goodix触点、HID样本、坏report或停止polling日志，不能称触摸已工作。
+Linux v6.12 `goodix_berlin_core.c:148-162`定义8字节header；当前poll
+在status=0时静默返回，IRQ为高也每80ms实际读取，因此缺少采集层观测。
+先在现有poll中加最多40条、每128次/状态变化采样的真实IRQ/reset/AVDD及
+ACK前8字节header/checksum；打印IC-info实际configID/version/fwstate/buffer。
+不改变显示、电源、report解析和真实输入派发；不生成假触点。
+继续对照实际Android Goodix配置发送/固件扫描协议，取证后移除此临时诊断。
+
