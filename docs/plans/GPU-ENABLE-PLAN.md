@@ -881,3 +881,34 @@ GPU present #N import=..us encode=..us commit=..us wait=..us total=..us rows=.. 
 判据:`rows=3200 copy=row` 表示退化成逐行 3200 次 blit,必须消除;
 `wait` 占比高说明需要双缓冲/管线化;`import` 占比高说明每帧重新导入
 surface 是主因。实测前不改动同步契约。
+
+### 7.14 实测归因结果（`console-20261114-144749.log`）
+
+9 条 `present #` 样本，按拷贝路径分组（µs，中位数）：
+
+| 路径 | n | import | encode | commit | wait | total | 最大 total |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| linear（等 pitch） | 5 | 34 | **222** | 3786 | 13081 | 15790 | 20992 |
+| texture（不等 pitch） | 4 | 36 | **5099** | 3818 | 7839 | 16314 | 23042 |
+
+结论与先前假设的修正：
+
+1. **import 可忽略**（16–50 µs），不是每帧重导入。
+2. **没有逐行退化**：全部样本 `rows=1`，`copy=row` 从未出现。11 处逐行 blit 的风险未发生。
+3. **texture 路径的 encode 是 linear 的 23 倍**（5.1 ms vs 0.22 ms），因为每帧都 `newTextureWithDescriptor` 新建线性纹理。
+4. **commit + wait 合计占 10.5–16.9 ms**，是超预算的主要部分。
+5. 同轮帧率 8–17 fps，晚到帧 46/52、110/119、37/47、62/74。
+
+不能做的改法：**跨帧缓存线性纹理**。内核只在 offer→complete 窗口内
+`prepare()` 并持有描述符（`PongAdrenoScanout.cpp:158-172`），完成后立即
+`complete()+release()`；缓存纹理会在页被回收后继续读，属于悬空访问。
+
+可做的下一步（按收益/风险排序）：
+- **A. 消除 texture 路径**：确认合成器 surface pitch 与 scanout pitch 差异来源；
+  若能在内核侧把 scanout pitch 设为 surface pitch（或反之），全部帧走 0.22 ms 的
+  linear 路径，直接省掉约 5 ms。
+- **B. 管线化 commit/wait**：需要内核支持双槽 offer，即将 `pending` 单槽改为
+  「上一帧完成后才回收描述符、本帧可先编码」。这是协议改动，必须先改内核并
+  保持 poisoned 语义。
+- **C. 测量先行**：A 和 B 都要用同一 `present #` 探针 A/B，判据是
+  `wait+commit` 下降与 `came a refresh late` 比例下降，而不是主观顺滑。
